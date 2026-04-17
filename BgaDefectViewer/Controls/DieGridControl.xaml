@@ -1,0 +1,71 @@
+<UserControl x:Class="BgaDefectViewer.Controls.DieGridControl"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:converters="clr-namespace:BgaDefectViewer.Converters"
+             xmlns:helpers="clr-namespace:BgaDefectViewer.Helpers">
+   <UserControl.Resources>
+       <converters:DieLetterToColorConverter x:Key="DieLetterToColor"/>
+       <!-- BindingProxy 讓 ItemsPanelTemplate 內的 UniformGrid 能綁定 DataContext 的 GridColumns -->
+       <helpers:BindingProxy x:Key="ColsProxy" Data="{Binding GridColumns}"/>
+   </UserControl.Resources>
+
+   <ScrollViewer HorizontalScrollBarVisibility="Auto" VerticalScrollBarVisibility="Auto">
+       <ItemsControl x:Name="DieItemsControl" ItemsSource="{Binding CurrentDieGrid}">
+           <ItemsControl.ItemsPanel>
+               <ItemsPanelTemplate>
+                   <!-- HorizontalAlignment/VerticalAlignment 防止 UniformGrid 撐滿 ScrollViewer，
+                        使格子保持緊密排列而非分散 -->
+                   <UniformGrid Columns="{Binding Data, Source={StaticResource ColsProxy}}"
+                                HorizontalAlignment="Left"
+                                VerticalAlignment="Top"/>
+               </ItemsPanelTemplate>
+           </ItemsControl.ItemsPanel>
+           <ItemsControl.ItemTemplate>
+               <DataTemplate>
+                   <Border Width="36" Height="36"
+                           Margin="0"
+                           ToolTip="{Binding Tooltip}">
+                       <Border.Style>
+                           <Style TargetType="Border">
+                               <!-- 預設：資料格樣式 -->
+                               <Setter Property="BorderThickness" Value="1"/>
+                               <Setter Property="BorderBrush" Value="#555"/>
+                               <Setter Property="Background"
+                                       Value="{Binding Letter, Converter={StaticResource DieLetterToColor}, ConverterParameter=Background}"/>
+                               <Style.Triggers>
+                                   <!-- 表頭格：青色背景 -->
+                                   <DataTrigger Binding="{Binding IsHeader}" Value="True">
+                                       <Setter Property="Background" Value="#00ACC1"/>
+                                       <Setter Property="BorderBrush" Value="#007C91"/>
+                                   </DataTrigger>
+                                   <!-- 已選取格：藍色粗框 -->
+                                   <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                       <Setter Property="BorderThickness" Value="2.5"/>
+                                       <Setter Property="BorderBrush" Value="#1565C0"/>
+                                   </DataTrigger>
+                               </Style.Triggers>
+                           </Style>
+                       </Border.Style>
+                       <TextBlock Text="{Binding DisplayText}"
+                                  FontSize="12"
+                                  FontWeight="Bold"
+                                  HorizontalAlignment="Center"
+                                  VerticalAlignment="Center">
+                           <TextBlock.Style>
+                               <Style TargetType="TextBlock">
+                                   <Setter Property="Foreground"
+                                           Value="{Binding Letter, Converter={StaticResource DieLetterToColor}, ConverterParameter=Foreground}"/>
+                                   <Style.Triggers>
+                                       <DataTrigger Binding="{Binding IsHeader}" Value="True">
+                                           <Setter Property="Foreground" Value="White"/>
+                                       </DataTrigger>
+                                   </Style.Triggers>
+                               </Style>
+                           </TextBlock.Style>
+                       </TextBlock>
+                   </Border>
+               </DataTemplate>
+           </ItemsControl.ItemTemplate>
+       </ItemsControl>
+   </ScrollViewer>
+</UserControl>

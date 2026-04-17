@@ -1,0 +1,46 @@
+<UserControl x:Class="BgaDefectViewer.Views.SettingsView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Grid Margin="8">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="檔案狀態" FontSize="14" FontWeight="Bold" Margin="0,0,0,8"/>
+
+        <DataGrid Grid.Row="1"
+                  x:Name="FileStatusDataGrid"
+                  ItemsSource="{Binding FileStatuses}"
+                  AutoGenerateColumns="False"
+                  IsReadOnly="True"
+                  CanUserReorderColumns="False"
+                  CanUserResizeRows="False"
+                  HeadersVisibility="Column"
+                  SelectionMode="Single"
+                  GridLinesVisibility="Horizontal"
+                  RowHeaderWidth="0"
+                  MouseDoubleClick="FileStatusDataGrid_MouseDoubleClick">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="類型" Binding="{Binding RequiredSymbol}" Width="50"/>
+                <DataGridTextColumn Header="狀態" Binding="{Binding StatusSymbol}" Width="50"/>
+                <DataGridTextColumn Header="檔案" Binding="{Binding Label}" Width="120"/>
+                <DataGridTextColumn Header="路徑" Binding="{Binding DisplayPath}" Width="*"/>
+                <DataGridTextColumn Header="筆數" Binding="{Binding CountText}" Width="60"/>
+            </DataGrid.Columns>
+            <DataGrid.RowStyle>
+                <Style TargetType="DataGridRow">
+                    <Setter Property="Foreground" Value="#333333"/>
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding Found}" Value="False">
+                            <Setter Property="Foreground" Value="Red"/>
+                        </DataTrigger>
+                        <DataTrigger Binding="{Binding Found}" Value="True">
+                            <Setter Property="Foreground" Value="#2E7D32"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </DataGrid.RowStyle>
+        </DataGrid>
+    </Grid>
+</UserControl>

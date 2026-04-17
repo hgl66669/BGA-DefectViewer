@@ -1,0 +1,74 @@
+<UserControl x:Class="BgaDefectViewer.Views.DefectMapView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <DockPanel>
+        <!-- Header -->
+        <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="8,4">
+            <!-- Data source indicator: gray=no data, blue=calculated from .map, green=map.csv -->
+            <Ellipse Width="10" Height="10" Margin="0,0,5,0" VerticalAlignment="Center">
+                <Ellipse.Style>
+                    <Style TargetType="Ellipse">
+                        <Setter Property="Fill" Value="#9E9E9E"/>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsAvailable}" Value="True">
+                                <Setter Property="Fill" Value="#43A047"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding IsCalculated}" Value="True">
+                                <Setter Property="Fill" Value="#1976D2"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Ellipse.Style>
+            </Ellipse>
+            <TextBlock Text="Defect Map — " FontSize="14" FontWeight="Bold"/>
+            <TextBlock Text="{Binding LotName}" FontSize="14" FontWeight="Bold"/>
+            <TextBlock Text="    Recipe: " Margin="16,0,0,0" FontSize="14"/>
+            <TextBlock Text="{Binding RecipeName}" FontSize="14"/>
+            <TextBlock VerticalAlignment="Center" FontSize="11" Foreground="Gray" Margin="12,0,0,0">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                        <Setter Property="Text" Value="(無資料)"/>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsAvailable}" Value="True">
+                                <Setter Property="Text" Value="(map.csv)"/>
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding IsCalculated}" Value="True">
+                                <Setter Property="Text" Value="(計算)"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+        </StackPanel>
+
+        <!-- Split view: Pre | Post -->
+        <Grid Margin="4">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="20"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <!-- Pre Repair column -->
+            <DockPanel Grid.Column="0">
+                <TextBlock DockPanel.Dock="Top" Text="Pre Repair" FontSize="16" FontWeight="Bold"
+                           HorizontalAlignment="Center" Margin="0,0,0,8"/>
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+                    <StackPanel x:Name="PreRepairPanel"/>
+                </ScrollViewer>
+            </DockPanel>
+
+            <!-- Separator -->
+            <Border Grid.Column="1" Width="1" Background="#CCCCCC" HorizontalAlignment="Center"/>
+
+            <!-- Post Repair column -->
+            <DockPanel Grid.Column="2">
+                <TextBlock DockPanel.Dock="Top" Text="Post Repair" FontSize="16" FontWeight="Bold"
+                           HorizontalAlignment="Center" Margin="0,0,0,8"/>
+                <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+                    <StackPanel x:Name="PostRepairPanel"/>
+                </ScrollViewer>
+            </DockPanel>
+        </Grid>
+    </DockPanel>
+</UserControl>
