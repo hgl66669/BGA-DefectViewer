@@ -15,6 +15,7 @@ namespace BgaDefectViewer.Controls;
 public class FovOverlayCanvas : FrameworkElement
 {
     private readonly VisualCollection _visuals;
+    private readonly DrawingVisual _deviceAreaVisual;
     private readonly DrawingVisual _fovGridVisual;
     private readonly DrawingVisual _overlapVisual;
     private readonly DrawingVisual _scanPathVisual;
@@ -28,6 +29,7 @@ public class FovOverlayCanvas : FrameworkElement
     public FovOverlayCanvas()
     {
         _visuals = new VisualCollection(this);
+        _deviceAreaVisual = new DrawingVisual();
         _fovGridVisual = new DrawingVisual();
         _overlapVisual = new DrawingVisual();
         _scanPathVisual = new DrawingVisual();
@@ -36,6 +38,7 @@ public class FovOverlayCanvas : FrameworkElement
         _edgeMaskVisual = new DrawingVisual();
         _duplicateVisual = new DrawingVisual();
 
+        _visuals.Add(_deviceAreaVisual);
         _visuals.Add(_fovGridVisual);
         _visuals.Add(_overlapVisual);
         _visuals.Add(_edgeMaskVisual);
@@ -62,6 +65,7 @@ public class FovOverlayCanvas : FrameworkElement
     {
         if (_transform == null) { Clear(); return; }
 
+        RenderDeviceArea(parameters, clusterCenter, clusterSpan);
         RenderFovGrid(cells);
         RenderOverlapZones(overlapRegions);
         RenderEdgeMask(cells, parameters);
@@ -73,6 +77,7 @@ public class FovOverlayCanvas : FrameworkElement
 
     public void Clear()
     {
+        using var dc0 = _deviceAreaVisual.RenderOpen();
         using var dc1 = _fovGridVisual.RenderOpen();
         using var dc2 = _overlapVisual.RenderOpen();
         using var dc3 = _scanPathVisual.RenderOpen();
@@ -80,6 +85,83 @@ public class FovOverlayCanvas : FrameworkElement
         using var dc5 = _alignmentVisual.RenderOpen();
         using var dc6 = _edgeMaskVisual.RenderOpen();
         using var dc7 = _duplicateVisual.RenderOpen();
+    }
+
+    // ── Device Area + Chip Bump Area Outlines ────────────────────────
+    //
+    // Two frames are drawn so the user can see immediately whether the
+    // Device Area input is large enough to enclose the chip bumps, and
+    // how the FOV union extends beyond the device (P4 of the spec).
+    //
+    //   Device Area (input, centered on 0,0): solid cyan dashed frame
+    //   Chip bump bounding box (from balls): fine dotted orange frame
+    //
+    // FOV union is NOT outlined — the four translucent FOV rectangles
+    // already show that extent naturally.
+
+    private void RenderDeviceArea(OverlapParams? p,
+        (double x, double y) chipCenter,
+        (double spanX, double spanY) chipSpan)
+    {
+        using var dc = _deviceAreaVisual.RenderOpen();
+        if (p == null || _transform == null) return;
+        if (!p.Enabled) return;
+
+        double dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+
+        // Device Area frame — centered at device origin (0, 0) by spec
+        double halfDx = p.DeviceAreaX / 2.0;
+        double halfDy = p.DeviceAreaY / 2.0;
+        var (dlx, dty) = _transform.DataToScreen(-halfDx, halfDy);
+        var (drx, dby) = _transform.DataToScreen(halfDx, -halfDy);
+        var devRect = new Rect(
+            Math.Min(dlx, drx), Math.Min(dty, dby),
+            Math.Abs(drx - dlx), Math.Abs(dby - dty));
+
+        var devPen = new Pen(new SolidColorBrush(Color.FromArgb(220, 0, 220, 220)), 1.5);
+        devPen.DashStyle = DashStyles.Dash;
+        devPen.Freeze();
+        dc.DrawRectangle(null, devPen, devRect);
+
+        var devLabel = new FormattedText(
+            $"Device Area: {p.DeviceAreaX:F2} x {p.DeviceAreaY:F2} mm",
+            CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+            new Typeface("Consolas"), 11,
+            new SolidColorBrush(Color.FromArgb(255, 0, 220, 220)), dpi);
+        var bgBrush = new SolidColorBrush(Color.FromArgb(180, 20, 20, 20));
+        bgBrush.Freeze();
+        dc.DrawRectangle(bgBrush, null,
+            new Rect(devRect.Left + 4, devRect.Bottom - devLabel.Height - 4,
+                     devLabel.Width + 6, devLabel.Height + 2));
+        dc.DrawText(devLabel, new Point(devRect.Left + 7, devRect.Bottom - devLabel.Height - 3));
+
+        // Chip bump bounding box — drawn at the ball cluster's true position
+        // (NOT re-centered on 0,0) so misalignment between device origin and
+        // the bumps is visible.
+        if (chipSpan.spanX > 0 && chipSpan.spanY > 0)
+        {
+            double halfCx = chipSpan.spanX / 2.0;
+            double halfCy = chipSpan.spanY / 2.0;
+            var (clx, cty) = _transform.DataToScreen(chipCenter.x - halfCx, chipCenter.y + halfCy);
+            var (crx, cby) = _transform.DataToScreen(chipCenter.x + halfCx, chipCenter.y - halfCy);
+            var chipRect = new Rect(
+                Math.Min(clx, crx), Math.Min(cty, cby),
+                Math.Abs(crx - clx), Math.Abs(cby - cty));
+
+            var chipPen = new Pen(new SolidColorBrush(Color.FromArgb(200, 255, 165, 0)), 1.0);
+            chipPen.DashStyle = new DashStyle(new[] { 1.0, 2.0 }, 0);
+            chipPen.Freeze();
+            dc.DrawRectangle(null, chipPen, chipRect);
+
+            var chipLabel = new FormattedText(
+                $"Chip bump: {chipSpan.spanX:F3} x {chipSpan.spanY:F3} mm",
+                CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                new Typeface("Consolas"), 10,
+                new SolidColorBrush(Color.FromArgb(255, 255, 165, 0)), dpi);
+            dc.DrawRectangle(bgBrush, null,
+                new Rect(chipRect.Left + 4, chipRect.Top + 4, chipLabel.Width + 6, chipLabel.Height + 2));
+            dc.DrawText(chipLabel, new Point(chipRect.Left + 7, chipRect.Top + 5));
+        }
     }
 
     // ── FOV Grid Rectangles ──────────────────────────────────────────
@@ -347,23 +429,33 @@ public class FovOverlayCanvas : FrameworkElement
         var bgBrush = new SolidColorBrush(Color.FromArgb(200, 20, 20, 20));
         bgBrush.Freeze();
 
-        // Alignment 1
+        bool same = p.Alignment1FovX == p.Alignment2FovX
+                 && p.Alignment1FovY == p.Alignment2FovY;
+
+        // Alignment 1 (magenta). When A1 and A2 collapse to the same FOV
+        // (common before alignment has been registered — both default to (1,1))
+        // we offset A1 slightly to the upper-left so both marks stay visible.
         var align1 = cells.FirstOrDefault(c => c.GridX == p.Alignment1FovX && c.GridY == p.Alignment1FovY);
         if (align1 != null)
-            DrawAlignMark(dc, dpi, bgBrush, align1, "A1", Colors.Magenta);
+            DrawAlignMark(dc, dpi, bgBrush, align1, "A1", Colors.Magenta,
+                offsetScreenX: same ? -18 : 0, offsetScreenY: same ? -18 : 0);
 
-        // Alignment 2
+        // Alignment 2 (cyan — distinct color from A1 for clarity)
         var align2 = cells.FirstOrDefault(c => c.GridX == p.Alignment2FovX && c.GridY == p.Alignment2FovY);
         if (align2 != null)
-            DrawAlignMark(dc, dpi, bgBrush, align2, "A2", Colors.Magenta);
+            DrawAlignMark(dc, dpi, bgBrush, align2, "A2", Colors.Cyan,
+                offsetScreenX: same ? 18 : 0, offsetScreenY: same ? 18 : 0);
     }
 
     private void DrawAlignMark(DrawingContext dc, double dpi, Brush bgBrush,
-        FovCell cell, string label, Color color)
+        FovCell cell, string label, Color color,
+        double offsetScreenX = 0, double offsetScreenY = 0)
     {
         if (_transform == null) return;
 
-        var (cx, cy) = _transform.DataToScreen(cell.CenterX, cell.CenterY);
+        var (cx0, cy0) = _transform.DataToScreen(cell.CenterX, cell.CenterY);
+        double cx = cx0 + offsetScreenX;
+        double cy = cy0 + offsetScreenY;
         var pen = new Pen(new SolidColorBrush(color), 2.0);
         pen.Freeze();
 

@@ -315,8 +315,13 @@ public class OverlapInspectionViewModel : ViewModelBase
         TotalDuplicates = _duplicates.Count;
         double moveDistX = param.MoveDistX;
         double moveDistY = param.MoveDistY;
-        ResultInfo = $"FOV Count: {param.FovCountX} x {param.FovCountY} | " +
-                     $"Move Dist: {moveDistX:F2} x {moveDistY:F2} mm";
+        double fovUnionX = (param.FovCountX - 1) * moveDistX + param.FovSizeX;
+        double fovUnionY = (param.FovCountY - 1) * moveDistY + param.FovSizeY;
+        ResultInfo = $"FOV Count: {param.FovCountX} x {param.FovCountY}\n" +
+                     $"FOV size (each rect): {param.FovSizeX:F2} x {param.FovSizeY:F2} mm\n" +
+                     $"Move Dist: {moveDistX:F2} x {moveDistY:F2} mm\n" +
+                     $"FOV union extent: {fovUnionX:F2} x {fovUnionY:F2} mm\n" +
+                     $"Device Area: {param.DeviceAreaX:F2} x {param.DeviceAreaY:F2} mm";
         UpdateFovBallCounts();
         BuildSummaryText(param);
 
@@ -352,6 +357,7 @@ public class OverlapInspectionViewModel : ViewModelBase
 
         var (minX, maxX, minY, maxY) = MasterCsvParser.GetBounds(_masterBalls!);
 
+        // Include FOV union extents
         foreach (var cell in _fovCells)
         {
             if (cell.Left < minX) minX = cell.Left;
@@ -360,8 +366,17 @@ public class OverlapInspectionViewModel : ViewModelBase
             if (cell.Top > maxY) maxY = cell.Top;
         }
 
+        // Include Device Area frame (centered at 0,0) so it is always visible
+        // even when it is larger than both balls and FOV union.
+        double halfDx = _deviceAreaX / 2.0;
+        double halfDy = _deviceAreaY / 2.0;
+        if (-halfDx < minX) minX = -halfDx;
+        if (halfDx > maxX) maxX = halfDx;
+        if (-halfDy < minY) minY = -halfDy;
+        if (halfDy > maxY) maxY = halfDy;
+
         // Add small margin
-        double margin = 1.0;
+        double margin = 2.0;
         _transform.SetBounds(minX - margin, maxX + margin, minY - margin, maxY + margin);
         _transform.ResetToFit();
     }
