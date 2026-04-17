@@ -40,11 +40,17 @@
             <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto">
                 <StackPanel Margin="8">
 
+                    <!-- Enable Overlap Inspection (KBGA Settings checkbox) -->
+                    <CheckBox Content="Enable Overlap Inspection"
+                              IsChecked="{Binding EnableOverlapInspection}"
+                              FontWeight="Bold" FontSize="13" Margin="0,0,0,8"/>
+
                     <!-- Execute Button -->
                     <Button Content="Execute" Command="{Binding ExecuteCommand}"
                             FontWeight="Bold" FontSize="14" Padding="12,6" Margin="0,0,0,8"
                             HorizontalAlignment="Stretch"
-                            Background="#0078D7" Foreground="White" BorderThickness="0"/>
+                            Background="#0078D7" Foreground="White" BorderThickness="0"
+                            IsEnabled="{Binding EnableOverlapInspection}"/>
 
                     <!-- Validation errors -->
                     <TextBlock Text="{Binding ValidationErrors}" Foreground="Red"
@@ -91,7 +97,8 @@
                     <Separator Margin="0,8"/>
 
                     <!-- Overlapping length -->
-                    <TextBlock Text="Overlapping length [mm]" FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
+                    <TextBlock Text="Overlapping length with adjacent FOV [mm]"
+                               FontWeight="Bold" FontSize="13" Margin="0,0,0,4" TextWrapping="Wrap"/>
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/>
@@ -108,7 +115,8 @@
                     <Separator Margin="0,8"/>
 
                     <!-- Boundary mask -->
-                    <TextBlock Text="Boundary mask [mm]" FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
+                    <TextBlock Text="Boundary mask length [mm]"
+                               FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/>
@@ -130,15 +138,9 @@
                     <Separator Margin="0,8"/>
 
                     <!-- Ball duplication -->
-                    <TextBlock Text="Ball duplication" FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="Allowance [pix]:" VerticalAlignment="Center" Margin="0,0,4,2"/>
-                        <TextBox Grid.Column="1" Text="{Binding DuplicationAllowancePix}" Margin="0,0,0,2" VerticalAlignment="Center"/>
-                    </Grid>
+                    <TextBlock Text="Ball duplication judgment allowance [pix]"
+                               FontWeight="Bold" FontSize="13" Margin="0,0,0,4" TextWrapping="Wrap"/>
+                    <TextBox Text="{Binding DuplicationAllowancePix}" Margin="0,0,0,2" VerticalAlignment="Center"/>
                     <TextBlock FontWeight="Bold" FontSize="12" Margin="0,4,0,0"
                                Foreground="OrangeRed" FontFamily="Consolas">
                         <Run Text="Duplicates found: "/><Run Text="{Binding TotalDuplicates, Mode=OneWay}"/>
@@ -147,7 +149,7 @@
                     <Separator Margin="0,8"/>
 
                     <!-- Alignment Marks -->
-                    <TextBlock Text="Alignment Marks (FOV position)" FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
+                    <TextBlock Text="Alignment FOV position" FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/>
@@ -160,14 +162,14 @@
                             <RowDefinition/>
                         </Grid.RowDefinitions>
 
-                        <TextBlock Grid.Row="0" Grid.Column="0" Text="A1 X:" VerticalAlignment="Center" Margin="0,0,4,2"/>
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Align. 1  X:" VerticalAlignment="Center" Margin="0,0,4,2"/>
                         <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Align1FovX}" Margin="0,0,8,2" VerticalAlignment="Center"/>
-                        <TextBlock Grid.Row="0" Grid.Column="2" Text="A1 Y:" VerticalAlignment="Center" Margin="0,0,4,2"/>
+                        <TextBlock Grid.Row="0" Grid.Column="2" Text="Y:" VerticalAlignment="Center" Margin="0,0,4,2"/>
                         <TextBox Grid.Row="0" Grid.Column="3" Text="{Binding Align1FovY}" Margin="0,0,0,2" VerticalAlignment="Center"/>
 
-                        <TextBlock Grid.Row="1" Grid.Column="0" Text="A2 X:" VerticalAlignment="Center" Margin="0,0,4,2"/>
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Align. 2  X:" VerticalAlignment="Center" Margin="0,0,4,2"/>
                         <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Align2FovX}" Margin="0,0,8,2" VerticalAlignment="Center"/>
-                        <TextBlock Grid.Row="1" Grid.Column="2" Text="A2 Y:" VerticalAlignment="Center" Margin="0,0,4,2"/>
+                        <TextBlock Grid.Row="1" Grid.Column="2" Text="Y:" VerticalAlignment="Center" Margin="0,0,4,2"/>
                         <TextBox Grid.Row="1" Grid.Column="3" Text="{Binding Align2FovY}" Margin="0,0,0,2" VerticalAlignment="Center"/>
                     </Grid>
 

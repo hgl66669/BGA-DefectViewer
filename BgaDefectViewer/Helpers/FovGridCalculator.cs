@@ -191,11 +191,14 @@ public static class FovGridCalculator
     }
 
     /// <summary>
-    /// Validate parameters and return a list of error messages (empty = valid).
+    /// Validate parameters.
+    /// Errors are hard blockers (geometry can't be computed).
+    /// Warnings are advisory (e.g., boundary mask creates inspection dead zones).
     /// </summary>
-    public static List<string> ValidateParams(OverlapParams p)
+    public static (List<string> errors, List<string> warnings) ValidateParams(OverlapParams p)
     {
         var errors = new List<string>();
+        var warnings = new List<string>();
 
         if (p.DeviceAreaX <= 0) errors.Add("Device Area X must be > 0");
         if (p.DeviceAreaY <= 0) errors.Add("Device Area Y must be > 0");
@@ -205,6 +208,8 @@ public static class FovGridCalculator
         if (p.OverlapLengthY < 0) errors.Add("Overlap Length Y must be >= 0");
         if (p.OverlapLengthX >= p.FovSizeX) errors.Add("Overlap Length X must be < FOV X");
         if (p.OverlapLengthY >= p.FovSizeY) errors.Add("Overlap Length Y must be < FOV Y");
+        if (p.BoundaryMaskX < 0) errors.Add("Boundary Mask X must be >= 0");
+        if (p.BoundaryMaskY < 0) errors.Add("Boundary Mask Y must be >= 0");
         if (p.DuplicationAllowancePix < 0) errors.Add("Duplication Allowance must be >= 0");
 
         if (p.Alignment1FovX < 1 || p.Alignment1FovX > p.FovCountX)
@@ -216,6 +221,13 @@ public static class FovGridCalculator
         if (p.Alignment2FovY < 1 || p.Alignment2FovY > p.FovCountY)
             errors.Add($"Align 2 Y must be 1~{p.FovCountY}");
 
-        return errors;
+        // Overlap must be wide enough to cover the boundary mask on both
+        // adjacent FOVs, otherwise a strip at each FOV seam is never inspected.
+        if (p.OverlapLengthX < 2 * p.BoundaryMaskX)
+            warnings.Add($"Overlap X ({p.OverlapLengthX:F3}) < 2 × Boundary Mask X ({p.BoundaryMaskX:F3}): inspection dead zone at FOV seams");
+        if (p.OverlapLengthY < 2 * p.BoundaryMaskY)
+            warnings.Add($"Overlap Y ({p.OverlapLengthY:F3}) < 2 × Boundary Mask Y ({p.BoundaryMaskY:F3}): inspection dead zone at FOV seams");
+
+        return (errors, warnings);
     }
 }

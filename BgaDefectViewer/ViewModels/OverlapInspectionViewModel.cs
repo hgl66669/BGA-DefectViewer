@@ -25,6 +25,13 @@ public class OverlapInspectionViewModel : ViewModelBase
 
     // ── Input parameters (no auto-recalculate — user clicks Execute) ──
 
+    private bool _enableOverlapInspection = true;
+    public bool EnableOverlapInspection
+    {
+        get => _enableOverlapInspection;
+        set => SetProperty(ref _enableOverlapInspection, value);
+    }
+
     private double _deviceAreaX = 90.0;
     public double DeviceAreaX
     {
@@ -109,14 +116,14 @@ public class OverlapInspectionViewModel : ViewModelBase
         set => SetProperty(ref _align1FovY, value);
     }
 
-    private int _align2FovX = 2;
+    private int _align2FovX = 1;
     public int Align2FovX
     {
         get => _align2FovX;
         set => SetProperty(ref _align2FovX, value);
     }
 
-    private int _align2FovY = 2;
+    private int _align2FovY = 1;
     public int Align2FovY
     {
         get => _align2FovY;
@@ -249,11 +256,29 @@ public class OverlapInspectionViewModel : ViewModelBase
     {
         if (_masterBalls == null || _transform == null) return;
 
+        if (!_enableOverlapInspection)
+        {
+            _hasResult = false;
+            _fovCells.Clear();
+            _overlapRegions.Clear();
+            _duplicates.Clear();
+            FovBallCounts = new ObservableCollection<FovBallCount>();
+            TotalDuplicates = 0;
+            ValidationErrors = "";
+            ResultInfo = "";
+            SummaryText = "Overlap Inspection disabled";
+            RequestRender();
+            return;
+        }
+
         var param = BuildParams();
 
-        // Validate
-        var errors = FovGridCalculator.ValidateParams(param);
-        ValidationErrors = errors.Count > 0 ? string.Join("\n", errors) : "";
+        // Validate (hard errors block execution; warnings still render)
+        var (errors, warnings) = FovGridCalculator.ValidateParams(param);
+        var messages = new List<string>();
+        messages.AddRange(errors);
+        messages.AddRange(warnings.Select(w => "Warning: " + w));
+        ValidationErrors = messages.Count > 0 ? string.Join("\n", messages) : "";
         if (errors.Count > 0)
         {
             _hasResult = false;
@@ -268,9 +293,9 @@ public class OverlapInspectionViewModel : ViewModelBase
             return;
         }
 
-        // Build FOV grid (count auto-calculated in OverlapParams)
-        _fovCells = FovGridCalculator.CalculateFovGrid(param,
-            _clusterCenter.x, _clusterCenter.y);
+        // Device center is fixed at (0, 0) for the simulator — this matches the
+        // real machine where MP_StgInspOrg defines the stage inspection origin.
+        _fovCells = FovGridCalculator.CalculateFovGrid(param, 0.0, 0.0);
 
         // Assign balls to FOV cells
         FovGridCalculator.AssignBallsToFovCells(_fovCells, _masterBalls);
@@ -300,6 +325,7 @@ public class OverlapInspectionViewModel : ViewModelBase
 
     private OverlapParams BuildParams() => new()
     {
+        Enabled = _enableOverlapInspection,
         DeviceAreaX = _deviceAreaX,
         DeviceAreaY = _deviceAreaY,
         FovSizeX = _fovSizeX,
