@@ -220,6 +220,14 @@
                             <DataGridTextColumn Header="Balls" Binding="{Binding BallCount}" Width="60"/>
                         </DataGrid.Columns>
                     </DataGrid>
+
+                    <!-- Totals summary (inspected / total / masked) -->
+                    <Border BorderBrush="#CCCCCC" BorderThickness="1,0,1,1"
+                            Background="#FAFAFA" Padding="6,4">
+                        <TextBlock Text="{Binding BallTotalsText}"
+                                   FontFamily="Consolas" FontSize="12"
+                                   TextWrapping="Wrap"/>
+                    </Border>
                 </StackPanel>
             </ScrollViewer>
         </Grid>

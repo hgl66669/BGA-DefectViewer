@@ -296,6 +296,13 @@ public class OverlapInspectionViewModel : ViewModelBase
         set => SetProperty(ref _fovBallCounts, value);
     }
 
+    private string _ballTotalsText = "";
+    public string BallTotalsText
+    {
+        get => _ballTotalsText;
+        set => SetProperty(ref _ballTotalsText, value);
+    }
+
     // ── Commands ─────────────────────────────────────────────────────
 
     public ICommand ExecuteCommand { get; }
@@ -331,6 +338,7 @@ public class OverlapInspectionViewModel : ViewModelBase
         _overlapRegions.Clear();
         _duplicates.Clear();
         FovBallCounts = new ObservableCollection<FovBallCount>();
+        BallTotalsText = "";
         TotalDuplicates = 0;
         ValidationErrors = "";
         ResultInfo = "";
@@ -590,6 +598,18 @@ public class OverlapInspectionViewModel : ViewModelBase
             });
         }
         FovBallCounts = counts;
+
+        // Totals summary (shown just below the Balls-per-FOV table)
+        int inspected = _fovCells.Sum(c => c.BallIds.Count);
+        int total = _masterBalls?.Length ?? 0;
+        int hidden = _hiddenBallIds.Count;
+        int shared = _duplicates.Count;
+
+        string line1 = $"Inspected: {inspected,7:N0}   Total: {total,7:N0}";
+        string line2 = hidden > 0
+            ? $"Masked:    {hidden,7:N0}   Shared: {shared,7:N0}"
+            : $"Shared:    {shared,7:N0}";
+        BallTotalsText = line1 + "\n" + line2;
     }
 
     private void BuildSummaryText(OverlapParams param)
