@@ -192,8 +192,10 @@ public class MainViewModel : ViewModelBase
         if (masterCheck.Found)
         {
             _masterBalls = await Task.Run(() => MasterCsvParser.Parse(masterCheck.ActualPath!));
+            var datPath = Path.ChangeExtension(masterCheck.ActualPath!, ".dat");
+            var metadata = await Task.Run(() => MasterDatParser.Parse(datPath));
             SubstrateViewer.LoadMaster(_masterBalls);
-            OverlapInspection.LoadMaster(_masterBalls);
+            OverlapInspection.LoadMaster(_masterBalls, metadata);
             StatusText = $"Master({_masterBalls.Length} balls) | Select a Lot# to load inspection data";
         }
         else
@@ -218,8 +220,10 @@ public class MainViewModel : ViewModelBase
             if (masterCheck.Found)
             {
                 _masterBalls = await Task.Run(() => MasterCsvParser.Parse(masterCheck.ActualPath!));
+                var datPath = Path.ChangeExtension(masterCheck.ActualPath!, ".dat");
+                var metadata = await Task.Run(() => MasterDatParser.Parse(datPath));
                 SubstrateViewer.LoadMaster(_masterBalls);
-                OverlapInspection.LoadMaster(_masterBalls);
+                OverlapInspection.LoadMaster(_masterBalls, metadata);
                 loaded.Add($"Master({_masterBalls.Length} balls)");
             }
             else

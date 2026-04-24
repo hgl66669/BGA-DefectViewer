@@ -104,18 +104,49 @@ public class OverlapInspectionViewModel : ViewModelBase
         set => SetProperty(ref _duplicationAllowancePix, value);
     }
 
+    // Alignment mm positions (from KBGA .dat file). When _align*UseMm is on,
+    // the mm value is the source of truth, the grid index is auto-derived,
+    // and rendering uses the exact mm point (not the FOV center).
+    // Manual edit of the grid-index TextBoxes turns off mm mode for that point.
+    private bool _align1UseMm;
+    private bool _align2UseMm;
+    private double _align1MmX, _align1MmY;
+    private double _align2MmX, _align2MmY;
+
+    public bool Align1UseMm => _align1UseMm;
+    public bool Align2UseMm => _align2UseMm;
+    public double Align1MmX => _align1MmX;
+    public double Align1MmY => _align1MmY;
+    public double Align2MmX => _align2MmX;
+    public double Align2MmY => _align2MmY;
+
+    private string _alignSourceText = "";
+    public string AlignSourceText
+    {
+        get => _alignSourceText;
+        set => SetProperty(ref _alignSourceText, value);
+    }
+
     private int _align1FovX = 1;
     public int Align1FovX
     {
         get => _align1FovX;
-        set => SetProperty(ref _align1FovX, value);
+        set
+        {
+            if (SetProperty(ref _align1FovX, value))
+                _align1UseMm = false;
+        }
     }
 
     private int _align1FovY = 1;
     public int Align1FovY
     {
         get => _align1FovY;
-        set => SetProperty(ref _align1FovY, value);
+        set
+        {
+            if (SetProperty(ref _align1FovY, value))
+                _align1UseMm = false;
+        }
     }
 
     // Align 2 auto-tracks the bottom-right FOV (diagonal partner of Align 1)
@@ -130,7 +161,10 @@ public class OverlapInspectionViewModel : ViewModelBase
         set
         {
             if (SetProperty(ref _align2FovX, value))
+            {
                 _align2AutoTrack = false;
+                _align2UseMm = false;
+            }
         }
     }
 
@@ -141,11 +175,28 @@ public class OverlapInspectionViewModel : ViewModelBase
         set
         {
             if (SetProperty(ref _align2FovY, value))
+            {
                 _align2AutoTrack = false;
+                _align2UseMm = false;
+            }
         }
     }
 
-    /// <summary>Programmatic update that does NOT disable auto-tracking.</summary>
+    /// <summary>Programmatic update of grid index that leaves tracking flags alone.</summary>
+    private void SetAlign1Internally(int x, int y)
+    {
+        if (_align1FovX != x)
+        {
+            _align1FovX = x;
+            OnPropertyChanged(nameof(Align1FovX));
+        }
+        if (_align1FovY != y)
+        {
+            _align1FovY = y;
+            OnPropertyChanged(nameof(Align1FovY));
+        }
+    }
+
     private void SetAlign2Internally(int x, int y)
     {
         if (_align2FovX != x)
@@ -317,11 +368,53 @@ public class OverlapInspectionViewModel : ViewModelBase
     // ── Public methods ───────────────────────────────────────────────
 
     /// <summary>Called by MainViewModel when master balls are loaded.</summary>
-    public void LoadMaster(MasterBall[] balls)
+    public void LoadMaster(MasterBall[] balls, MasterMetadata? metadata = null)
     {
         _masterBalls = balls;
         _visibleBalls = balls;
         _hiddenBallIds.Clear();
+
+        // If the KBGA .dat sidecar provided alignment fiducials, they take
+        // priority over the defaults (both in mm, same coordinate system
+        // as the ball CSV).
+        if (metadata?.AlignmentPoint1Mm is { } p1)
+        {
+            _align1MmX = p1.X; _align1MmY = p1.Y;
+            _align1UseMm = true;
+            OnPropertyChanged(nameof(Align1MmX));
+            OnPropertyChanged(nameof(Align1MmY));
+            OnPropertyChanged(nameof(Align1UseMm));
+        }
+        else
+        {
+            _align1UseMm = false;
+            OnPropertyChanged(nameof(Align1UseMm));
+        }
+        if (metadata?.AlignmentPoint2Mm is { } p2)
+        {
+            _align2MmX = p2.X; _align2MmY = p2.Y;
+            _align2UseMm = true;
+            _align2AutoTrack = false; // mm overrides the default diagonal
+            OnPropertyChanged(nameof(Align2MmX));
+            OnPropertyChanged(nameof(Align2MmY));
+            OnPropertyChanged(nameof(Align2UseMm));
+        }
+        else
+        {
+            _align2UseMm = false;
+            OnPropertyChanged(nameof(Align2UseMm));
+        }
+
+        if (_align1UseMm || _align2UseMm)
+        {
+            AlignSourceText =
+                $"Align from .dat: A1 ({_align1MmX:F3}, {_align1MmY:F3}) mm, " +
+                $"A2 ({_align2MmX:F3}, {_align2MmY:F3}) mm";
+        }
+        else
+        {
+            AlignSourceText = "Align source: grid index (no .dat found)";
+        }
 
         var (cx, cy, sx, sy) = FovGridCalculator.CalculateBallClusterCenter(balls);
         _clusterCenter = (cx, cy);
@@ -413,11 +506,26 @@ public class OverlapInspectionViewModel : ViewModelBase
 
         var param = BuildParams();
 
-        // Auto-set Align 2 to the bottom-right FOV (diagonal to Align 1)
-        // whenever the user has not manually edited it. This gives a sensible
-        // default for any grid size: 2×2 → (2,2), 3×3 → (3,3), 2×3 → (2,3).
-        if (_align2AutoTrack)
+        // Derive grid indices from mm positions, if the .dat file registered
+        // real alignment fiducials. Falls back to the auto-diagonal default
+        // for Align 2 when mm is not available.
+        if (_align1UseMm)
         {
+            var (gx, gy) = MmToGridIndex(_align1MmX, _align1MmY, param);
+            SetAlign1Internally(gx, gy);
+            param.Alignment1FovX = gx;
+            param.Alignment1FovY = gy;
+        }
+        if (_align2UseMm)
+        {
+            var (gx, gy) = MmToGridIndex(_align2MmX, _align2MmY, param);
+            SetAlign2Internally(gx, gy);
+            param.Alignment2FovX = gx;
+            param.Alignment2FovY = gy;
+        }
+        else if (_align2AutoTrack)
+        {
+            // No .dat registered — default to the diagonal of Align 1.
             SetAlign2Internally(param.FovCountX, param.FovCountY);
             param.Alignment2FovX = param.FovCountX;
             param.Alignment2FovY = param.FovCountY;
@@ -530,6 +638,8 @@ public class OverlapInspectionViewModel : ViewModelBase
         ShowCameraRawLayer = _showCameraRawLayer,
         ShowFovLayer = _showFovLayer,
         ShowEffectiveLayer = _showEffectiveLayer,
+        Align1Mm = _align1UseMm ? (_align1MmX, _align1MmY) : null,
+        Align2Mm = _align2UseMm ? (_align2MmX, _align2MmY) : null,
     };
 
     /// <summary>
@@ -610,6 +720,40 @@ public class OverlapInspectionViewModel : ViewModelBase
             ? $"Masked:    {hidden,7:N0}   Shared: {shared,7:N0}"
             : $"Shared:    {shared,7:N0}";
         BallTotalsText = line1 + "\n" + line2;
+    }
+
+    /// <summary>
+    /// Map an mm position to the containing FOV grid index (1-based).
+    /// Uses the same layout formulas as CalculateFovGrid, so the
+    /// inverse is simple: index_x ≈ 1 + (mmX / MoveDist) + (MaxNum-1)/2.
+    /// Falls back to clamped (1,1)/(MaxNum,MaxNum) if the point lies
+    /// outside every FOV rectangle.
+    /// </summary>
+    private static (int gx, int gy) MmToGridIndex(double mmX, double mmY, OverlapParams p)
+    {
+        int maxX = Math.Max(1, p.FovCountX);
+        int maxY = Math.Max(1, p.FovCountY);
+
+        int gx = 1, gy = 1;
+        double bestDx = double.PositiveInfinity, bestDy = double.PositiveInfinity;
+
+        // Device center is (0,0); FOV (x,y) center = ((x − (1+maxX)/2)·MoveDistX, −(y − (1+maxY)/2)·MoveDistY)
+        double cfx = (1 + maxX) / 2.0;
+        double cfy = (1 + maxY) / 2.0;
+
+        for (int x = 1; x <= maxX; x++)
+        {
+            double cx = (x - cfx) * p.MoveDistX;
+            double d = Math.Abs(mmX - cx);
+            if (d < bestDx) { bestDx = d; gx = x; }
+        }
+        for (int y = 1; y <= maxY; y++)
+        {
+            double cy = -(y - cfy) * p.MoveDistY;
+            double d = Math.Abs(mmY - cy);
+            if (d < bestDy) { bestDy = d; gy = y; }
+        }
+        return (gx, gy);
     }
 
     private void BuildSummaryText(OverlapParams param)

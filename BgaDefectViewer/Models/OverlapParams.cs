@@ -79,4 +79,10 @@ public class OverlapParams
     public int Alignment1FovY { get; set; } = 1;
     public int Alignment2FovX { get; set; } = 1;
     public int Alignment2FovY { get; set; } = 1;
+
+    // When the KBGA .dat sidecar registers real fiducial positions (mm),
+    // these carry the exact point. The overlay draws the cross at this
+    // position instead of the FOV center. null = no registered mm point.
+    public (double X, double Y)? Align1Mm { get; set; }
+    public (double X, double Y)? Align2Mm { get; set; }
 }

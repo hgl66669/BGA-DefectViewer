@@ -504,42 +504,83 @@ public class FovOverlayCanvas : FrameworkElement
         var bgBrush = new SolidColorBrush(Color.FromArgb(200, 20, 20, 20));
         bgBrush.Freeze();
 
-        bool same = p.Alignment1FovX == p.Alignment2FovX
-                 && p.Alignment1FovY == p.Alignment2FovY;
+        // If the .dat file registered real mm fiducial positions, draw there
+        // directly — this matches the exact spot the real machine aligns to.
+        // Otherwise fall back to the containing FOV's center.
+        bool sameGrid = p.Alignment1FovX == p.Alignment2FovX
+                     && p.Alignment1FovY == p.Alignment2FovY;
 
-        // Alignment 1 (magenta). When A1 and A2 collapse to the same FOV
-        // (common before alignment has been registered — both default to (1,1))
-        // we offset A1 slightly to the upper-left so both marks stay visible.
-        var align1 = cells.FirstOrDefault(c => c.GridX == p.Alignment1FovX && c.GridY == p.Alignment1FovY);
-        if (align1 != null)
-            DrawAlignMark(dc, dpi, bgBrush, align1, "A1", Colors.Magenta,
-                offsetScreenX: same ? -18 : 0, offsetScreenY: same ? -18 : 0);
+        // Collision offsets only apply when both fall back to FOV centers;
+        // mm positions are already precise so no shift is needed.
+        double a1OffX = 0, a1OffY = 0, a2OffX = 0, a2OffY = 0;
+        if (sameGrid && p.Align1Mm == null && p.Align2Mm == null)
+        {
+            a1OffX = -18; a1OffY = -18;
+            a2OffX = +18; a2OffY = +18;
+        }
 
-        // Alignment 2 (cyan — distinct color from A1 for clarity)
-        var align2 = cells.FirstOrDefault(c => c.GridX == p.Alignment2FovX && c.GridY == p.Alignment2FovY);
-        if (align2 != null)
-            DrawAlignMark(dc, dpi, bgBrush, align2, "A2", Colors.Cyan,
-                offsetScreenX: same ? 18 : 0, offsetScreenY: same ? 18 : 0);
+        // Alignment 1 (magenta)
+        if (p.Align1Mm is { } a1mm)
+        {
+            DrawAlignMarkMm(dc, dpi, bgBrush, a1mm.X, a1mm.Y, "A1", Colors.Magenta);
+        }
+        else
+        {
+            var align1 = cells.FirstOrDefault(c => c.GridX == p.Alignment1FovX && c.GridY == p.Alignment1FovY);
+            if (align1 != null)
+                DrawAlignMarkAtCell(dc, dpi, bgBrush, align1, "A1", Colors.Magenta, a1OffX, a1OffY);
+        }
+
+        // Alignment 2 (cyan)
+        if (p.Align2Mm is { } a2mm)
+        {
+            DrawAlignMarkMm(dc, dpi, bgBrush, a2mm.X, a2mm.Y, "A2", Colors.Cyan);
+        }
+        else
+        {
+            var align2 = cells.FirstOrDefault(c => c.GridX == p.Alignment2FovX && c.GridY == p.Alignment2FovY);
+            if (align2 != null)
+                DrawAlignMarkAtCell(dc, dpi, bgBrush, align2, "A2", Colors.Cyan, a2OffX, a2OffY);
+        }
     }
 
-    private void DrawAlignMark(DrawingContext dc, double dpi, Brush bgBrush,
+    private void DrawAlignMarkAtCell(DrawingContext dc, double dpi, Brush bgBrush,
         FovCell cell, string label, Color color,
-        double offsetScreenX = 0, double offsetScreenY = 0)
+        double offsetScreenX, double offsetScreenY)
     {
         if (_transform == null) return;
-
         var (cx0, cy0) = _transform.DataToScreen(cell.CenterX, cell.CenterY);
-        double cx = cx0 + offsetScreenX;
-        double cy = cy0 + offsetScreenY;
+        DrawAlignCross(dc, dpi, bgBrush, cx0 + offsetScreenX, cy0 + offsetScreenY, label, color);
+    }
+
+    private void DrawAlignMarkMm(DrawingContext dc, double dpi, Brush bgBrush,
+        double mmX, double mmY, string label, Color color)
+    {
+        if (_transform == null) return;
+        var (cx, cy) = _transform.DataToScreen(mmX, mmY);
+        DrawAlignCross(dc, dpi, bgBrush, cx, cy, label, color);
+
+        // Tiny mm-coordinate caption under the label so the registered
+        // position is visible on the canvas.
+        var ft = new FormattedText(
+            $"({mmX:F2}, {mmY:F2}) mm",
+            CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+            new Typeface("Consolas"), 10,
+            new SolidColorBrush(Color.FromArgb(220, color.R, color.G, color.B)), dpi);
+        dc.DrawRectangle(bgBrush, null,
+            new Rect(cx + 20, cy + 8, ft.Width + 4, ft.Height + 2));
+        dc.DrawText(ft, new Point(cx + 22, cy + 9));
+    }
+
+    private static void DrawAlignCross(DrawingContext dc, double dpi, Brush bgBrush,
+        double cx, double cy, string label, Color color)
+    {
         var pen = new Pen(new SolidColorBrush(color), 2.0);
         pen.Freeze();
-
-        double size = 15;
-        // Cross mark
+        const double size = 15;
         dc.DrawLine(pen, new Point(cx - size, cy), new Point(cx + size, cy));
         dc.DrawLine(pen, new Point(cx, cy - size), new Point(cx, cy + size));
 
-        // Label
         var ft = new FormattedText(
             label,
             CultureInfo.InvariantCulture, FlowDirection.LeftToRight,

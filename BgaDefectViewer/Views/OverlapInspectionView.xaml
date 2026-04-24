@@ -182,6 +182,9 @@
 
                     <!-- Alignment Marks -->
                     <TextBlock Text="Alignment FOV position" FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
+                    <TextBlock Text="{Binding AlignSourceText}" Foreground="#888888"
+                               FontFamily="Consolas" FontSize="10" TextWrapping="Wrap"
+                               Margin="0,0,0,4"/>
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/>
