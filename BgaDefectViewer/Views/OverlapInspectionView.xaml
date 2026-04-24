@@ -47,6 +47,12 @@
 
                     <!-- Display layers -->
                     <TextBlock Text="Display layers" FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
+                    <CheckBox Content="Substrate outline (PCB edge)"
+                              IsChecked="{Binding ShowSubstrate}"
+                              IsEnabled="{Binding HasSubstrateSize}" Margin="0,0,0,2"/>
+                    <TextBlock Text="{Binding SubstrateSizeText}" Foreground="#888888"
+                               FontFamily="Consolas" FontSize="10" TextWrapping="Wrap"
+                               Margin="20,0,0,4"/>
                     <CheckBox Content="Camera raw image (actual photo)"
                               IsChecked="{Binding ShowCameraRawLayer}" Margin="0,0,0,2"/>
                     <CheckBox Content="FOV (logical inspection)"

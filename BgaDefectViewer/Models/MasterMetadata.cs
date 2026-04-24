@@ -11,4 +11,7 @@ public class MasterMetadata
     public (double X, double Y)? AlignmentPoint1Mm { get; set; }
     public (double X, double Y)? AlignmentPoint2Mm { get; set; }
     public (double X, double Y)? AlignmentCenterMm { get; set; }
+
+    /// <summary>Physical substrate dimensions in mm: (X, Y, Z thickness).</summary>
+    public (double X, double Y, double Z)? SubstrateSize { get; set; }
 }

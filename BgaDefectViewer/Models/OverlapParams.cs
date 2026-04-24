@@ -85,4 +85,11 @@ public class OverlapParams
     // position instead of the FOV center. null = no registered mm point.
     public (double X, double Y)? Align1Mm { get; set; }
     public (double X, double Y)? Align2Mm { get; set; }
+
+    // Physical substrate outline (mm). Null = unknown. When ShowSubstrate
+    // is on, a green dashed frame is drawn at ±SubstrateSize/2 around the
+    // device origin (0, 0) — matches the KBGA `SubstrateSize=X,Y,Z` field.
+    public double? SubstrateSizeX { get; set; }
+    public double? SubstrateSizeY { get; set; }
+    public bool ShowSubstrate { get; set; }
 }

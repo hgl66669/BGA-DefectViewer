@@ -209,6 +209,36 @@ public class FovOverlayCanvas : FrameworkElement
                      devLabel.Width + 6, devLabel.Height + 2));
         dc.DrawText(devLabel, new Point(devRect.Left + 7, devRect.Bottom - devLabel.Height - 3));
 
+        // Substrate outline (green) — the physical PCB edge. Drawn BEFORE
+        // the Device Area so it sits at the very bottom of the reference
+        // frames (it is usually the largest).
+        if (p.ShowSubstrate && p.SubstrateSizeX is { } subX && p.SubstrateSizeY is { } subY
+            && subX > 0 && subY > 0)
+        {
+            double halfSx = subX / 2.0;
+            double halfSy = subY / 2.0;
+            var (slx, sty) = _transform.DataToScreen(-halfSx, halfSy);
+            var (srx, sby) = _transform.DataToScreen(halfSx, -halfSy);
+            var subRect = new Rect(
+                Math.Min(slx, srx), Math.Min(sty, sby),
+                Math.Abs(srx - slx), Math.Abs(sby - sty));
+
+            var subPen = new Pen(new SolidColorBrush(Color.FromArgb(230, 0, 220, 80)), 2.0);
+            subPen.DashStyle = new DashStyle(new[] { 6.0, 4.0 }, 0);
+            subPen.Freeze();
+            dc.DrawRectangle(null, subPen, subRect);
+
+            var subLabel = new FormattedText(
+                $"Substrate: {subX:F2} x {subY:F2} mm",
+                CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                new Typeface("Consolas"), 11,
+                new SolidColorBrush(Color.FromArgb(255, 0, 220, 80)), dpi);
+            dc.DrawRectangle(bgBrush, null,
+                new Rect(subRect.Right - subLabel.Width - 10, subRect.Top + 4,
+                         subLabel.Width + 6, subLabel.Height + 2));
+            dc.DrawText(subLabel, new Point(subRect.Right - subLabel.Width - 7, subRect.Top + 5));
+        }
+
         // Chip bump bounding box — drawn at the ball cluster's true position
         // (NOT re-centered on 0,0) so misalignment between device origin and
         // the bumps is visible.

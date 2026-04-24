@@ -127,6 +127,36 @@ public class OverlapInspectionViewModel : ViewModelBase
         set => SetProperty(ref _alignSourceText, value);
     }
 
+    // Substrate outline from `SubstrateSize=X,Y,Z` in the .dat file.
+    private double? _substrateSizeX;
+    private double? _substrateSizeY;
+    public double? SubstrateSizeX => _substrateSizeX;
+    public double? SubstrateSizeY => _substrateSizeY;
+    public bool HasSubstrateSize => _substrateSizeX.HasValue && _substrateSizeY.HasValue;
+
+    private string _substrateSizeText = "";
+    public string SubstrateSizeText
+    {
+        get => _substrateSizeText;
+        set => SetProperty(ref _substrateSizeText, value);
+    }
+
+    private bool _showSubstrate;
+    public bool ShowSubstrate
+    {
+        get => _showSubstrate;
+        set
+        {
+            if (SetProperty(ref _showSubstrate, value))
+            {
+                // Substrate may be larger than the FOV union / device area —
+                // re-expand bounds so the green frame is fully visible.
+                if (_hasResult) ExpandBoundsForFovGrid();
+                RequestRender();
+            }
+        }
+    }
+
     private int _align1FovX = 1;
     public int Align1FovX
     {
@@ -405,21 +435,56 @@ public class OverlapInspectionViewModel : ViewModelBase
             OnPropertyChanged(nameof(Align2UseMm));
         }
 
-        if (_align1UseMm || _align2UseMm)
+        // Substrate outline
+        if (metadata?.SubstrateSize is { } sub)
         {
-            AlignSourceText =
-                $"Align from .dat: A1 ({_align1MmX:F3}, {_align1MmY:F3}) mm, " +
-                $"A2 ({_align2MmX:F3}, {_align2MmY:F3}) mm";
+            _substrateSizeX = sub.X;
+            _substrateSizeY = sub.Y;
+            SubstrateSizeText = $"Substrate: {sub.X:F2} x {sub.Y:F2} mm  (Z {sub.Z:F2})";
         }
         else
         {
-            AlignSourceText = "Align source: grid index (no .dat found)";
+            _substrateSizeX = null;
+            _substrateSizeY = null;
+            SubstrateSizeText = "Substrate: unknown (no .dat SubstrateSize)";
         }
+        OnPropertyChanged(nameof(SubstrateSizeX));
+        OnPropertyChanged(nameof(SubstrateSizeY));
+        OnPropertyChanged(nameof(HasSubstrateSize));
 
         var (cx, cy, sx, sy) = FovGridCalculator.CalculateBallClusterCenter(balls);
         _clusterCenter = (cx, cy);
         _clusterSpan = (sx, sy);
         ClusterCenterText = $"Center: ({cx:F3}, {cy:F3}) | Span: {sx:F3} x {sy:F3} mm";
+
+        // Build the alignment-source diagnostic AFTER cluster span is known,
+        // so we can show the ball-edge margin for each fiducial.
+        if (_align1UseMm || _align2UseMm)
+        {
+            string diag = "";
+            double chipHalfX = sx / 2.0, chipHalfY = sy / 2.0;
+            if (_align1UseMm)
+            {
+                double marginChipX = chipHalfX - Math.Abs(_align1MmX);
+                double marginChipY = chipHalfY - Math.Abs(_align1MmY);
+                string side = marginChipX >= 0 && marginChipY >= 0
+                    ? "inside chip bump bbox" : "outside chip bump bbox";
+                diag += $"\n  A1 ({_align1MmX:F3}, {_align1MmY:F3}) mm — {side}, chip-edge margin ({marginChipX:+0.00;-0.00}, {marginChipY:+0.00;-0.00}) mm";
+            }
+            if (_align2UseMm)
+            {
+                double marginChipX = chipHalfX - Math.Abs(_align2MmX);
+                double marginChipY = chipHalfY - Math.Abs(_align2MmY);
+                string side = marginChipX >= 0 && marginChipY >= 0
+                    ? "inside chip bump bbox" : "outside chip bump bbox";
+                diag += $"\n  A2 ({_align2MmX:F3}, {_align2MmY:F3}) mm — {side}, chip-edge margin ({marginChipX:+0.00;-0.00}, {marginChipY:+0.00;-0.00}) mm";
+            }
+            AlignSourceText = "Align from Master.dat:" + diag;
+        }
+        else
+        {
+            AlignSourceText = "Align source: grid index (no .dat fiducials)";
+        }
 
         // Auto-populate Device Area from ball span + margin
         DeviceAreaX = Math.Ceiling(sx + 2.0);
@@ -640,6 +705,9 @@ public class OverlapInspectionViewModel : ViewModelBase
         ShowEffectiveLayer = _showEffectiveLayer,
         Align1Mm = _align1UseMm ? (_align1MmX, _align1MmY) : null,
         Align2Mm = _align2UseMm ? (_align2MmX, _align2MmY) : null,
+        SubstrateSizeX = _substrateSizeX,
+        SubstrateSizeY = _substrateSizeY,
+        ShowSubstrate = _showSubstrate && _substrateSizeX.HasValue && _substrateSizeY.HasValue,
     };
 
     /// <summary>
@@ -669,6 +737,18 @@ public class OverlapInspectionViewModel : ViewModelBase
         if (halfDx > maxX) maxX = halfDx;
         if (-halfDy < minY) minY = -halfDy;
         if (halfDy > maxY) maxY = halfDy;
+
+        // If the substrate outline is being shown, include it so the green
+        // frame is always visible (substrate is typically the largest rect).
+        if (_showSubstrate && _substrateSizeX.HasValue && _substrateSizeY.HasValue)
+        {
+            double halfSx = _substrateSizeX.Value / 2.0;
+            double halfSy = _substrateSizeY.Value / 2.0;
+            if (-halfSx < minX) minX = -halfSx;
+            if (halfSx > maxX) maxX = halfSx;
+            if (-halfSy < minY) minY = -halfSy;
+            if (halfSy > maxY) maxY = halfSy;
+        }
 
         // If Camera Raw layer is visible, also include its extent (raw image
         // is wider than the FOV so the outermost cells extend far beyond).
