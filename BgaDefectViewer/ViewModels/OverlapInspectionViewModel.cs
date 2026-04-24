@@ -116,18 +116,46 @@ public class OverlapInspectionViewModel : ViewModelBase
         set => SetProperty(ref _align1FovY, value);
     }
 
+    // Align 2 auto-tracks the bottom-right FOV (diagonal partner of Align 1)
+    // until the user edits either coordinate manually. LoadMaster re-enables
+    // tracking because the new device may need a different grid size.
+    private bool _align2AutoTrack = true;
+
     private int _align2FovX = 1;
     public int Align2FovX
     {
         get => _align2FovX;
-        set => SetProperty(ref _align2FovX, value);
+        set
+        {
+            if (SetProperty(ref _align2FovX, value))
+                _align2AutoTrack = false;
+        }
     }
 
     private int _align2FovY = 1;
     public int Align2FovY
     {
         get => _align2FovY;
-        set => SetProperty(ref _align2FovY, value);
+        set
+        {
+            if (SetProperty(ref _align2FovY, value))
+                _align2AutoTrack = false;
+        }
+    }
+
+    /// <summary>Programmatic update that does NOT disable auto-tracking.</summary>
+    private void SetAlign2Internally(int x, int y)
+    {
+        if (_align2FovX != x)
+        {
+            _align2FovX = x;
+            OnPropertyChanged(nameof(Align2FovX));
+        }
+        if (_align2FovY != y)
+        {
+            _align2FovY = y;
+            OnPropertyChanged(nameof(Align2FovY));
+        }
     }
 
     // ── Camera raw & display layer settings ───────────────────────────
@@ -304,6 +332,10 @@ public class OverlapInspectionViewModel : ViewModelBase
         ResultInfo = "";
         SummaryText = "Press [Execute] to run overlap simulation";
 
+        // New device → re-enable Align-2 auto-tracking so the diagonal
+        // corner recomputes based on the next Execute's FovCount.
+        _align2AutoTrack = true;
+
         // Set up transform from ball bounds and render balls only
         var (minX, maxX, minY, maxY) = MasterCsvParser.GetBounds(balls);
         _transform = new CoordinateTransform();
@@ -364,6 +396,16 @@ public class OverlapInspectionViewModel : ViewModelBase
         }
 
         var param = BuildParams();
+
+        // Auto-set Align 2 to the bottom-right FOV (diagonal to Align 1)
+        // whenever the user has not manually edited it. This gives a sensible
+        // default for any grid size: 2×2 → (2,2), 3×3 → (3,3), 2×3 → (2,3).
+        if (_align2AutoTrack)
+        {
+            SetAlign2Internally(param.FovCountX, param.FovCountY);
+            param.Alignment2FovX = param.FovCountX;
+            param.Alignment2FovY = param.FovCountY;
+        }
 
         // Validate (hard errors block execution; warnings still render)
         var (errors, warnings) = FovGridCalculator.ValidateParams(param);
