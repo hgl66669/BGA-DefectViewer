@@ -10,6 +10,8 @@ namespace BgaDefectViewer.ViewModels;
 public class OverlapInspectionViewModel : ViewModelBase
 {
     private MasterBall[]? _masterBalls;
+    private MasterBall[]? _visibleBalls;     // _masterBalls minus mask-hidden
+    private HashSet<int> _hiddenBallIds = new();
     private CoordinateTransform? _transform;
     private List<FovCell> _fovCells = new();
     private List<(double left, double bottom, double right, double top)> _overlapRegions = new();
@@ -311,6 +313,8 @@ public class OverlapInspectionViewModel : ViewModelBase
     public void LoadMaster(MasterBall[] balls)
     {
         _masterBalls = balls;
+        _visibleBalls = balls;
+        _hiddenBallIds.Clear();
 
         var (cx, cy, sx, sy) = FovGridCalculator.CalculateBallClusterCenter(balls);
         _clusterCenter = (cx, cy);
@@ -350,8 +354,10 @@ public class OverlapInspectionViewModel : ViewModelBase
 
         _transform.SetCanvasSize(Canvas.ActualWidth, Canvas.ActualHeight);
 
-        // Render master balls (no defects in overlap simulation)
-        Canvas.RenderAll(_masterBalls, new List<DefectBall>(), _transform);
+        // Render balls minus any masked-out ones, so the canvas matches
+        // what the real machine would actually inspect.
+        var ballsToRender = _visibleBalls ?? _masterBalls;
+        Canvas.RenderAll(ballsToRender, new List<DefectBall>(), _transform);
 
         // Render FOV overlay only if we have results
         OverlayCanvas.SetTransform(_transform);
@@ -386,6 +392,8 @@ public class OverlapInspectionViewModel : ViewModelBase
             _fovCells.Clear();
             _overlapRegions.Clear();
             _duplicates.Clear();
+            _hiddenBallIds.Clear();
+            _visibleBalls = _masterBalls;
             FovBallCounts = new ObservableCollection<FovBallCount>();
             TotalDuplicates = 0;
             ValidationErrors = "";
@@ -419,6 +427,8 @@ public class OverlapInspectionViewModel : ViewModelBase
             _fovCells.Clear();
             _overlapRegions.Clear();
             _duplicates.Clear();
+            _hiddenBallIds.Clear();
+            _visibleBalls = _masterBalls;
             FovBallCounts = new ObservableCollection<FovBallCount>();
             TotalDuplicates = 0;
             ResultInfo = "";
@@ -431,14 +441,22 @@ public class OverlapInspectionViewModel : ViewModelBase
         // real machine where MP_StgInspOrg defines the stage inspection origin.
         _fovCells = FovGridCalculator.CalculateFovGrid(param, 0.0, 0.0);
 
-        // Assign balls to FOV cells
-        FovGridCalculator.AssignBallsToFovCells(_fovCells, _masterBalls);
+        // Detect duplicates BEFORE assignment — AssignBallsToFovCells dedups
+        // each ball onto the latest-scan cell, so afterwards BallIds alone
+        // no longer reveals which balls were shared.
+        _duplicates = FovGridCalculator.DetectDuplicateBalls(_fovCells, _masterBalls, param);
 
-        // Calculate overlap regions
+        // Assign balls to FOV cells (dedup by scan order + mask-aware).
+        // Returned set = balls that fell only in boundary mask zones; they
+        // should be hidden from rendering to simulate the real machine.
+        _hiddenBallIds = FovGridCalculator.AssignBallsToFovCells(_fovCells, _masterBalls, param);
+        _visibleBalls = _hiddenBallIds.Count == 0
+            ? _masterBalls
+            : _masterBalls.Where(b => !_hiddenBallIds.Contains(b.Id)).ToArray();
+
+        // Calculate overlap regions (uses full FOV rects — these represent
+        // what the camera photographs, not what gets inspected)
         _overlapRegions = FovGridCalculator.CalculateOverlapRegions(_fovCells);
-
-        // Detect duplicates (balls in multiple FOVs)
-        _duplicates = FovGridCalculator.DetectDuplicateBalls(_fovCells, _masterBalls);
 
         // Expand transform bounds to include the full FOV grid extent
         ExpandBoundsForFovGrid();
@@ -577,12 +595,18 @@ public class OverlapInspectionViewModel : ViewModelBase
     private void BuildSummaryText(OverlapParams param)
     {
         int totalBalls = _masterBalls?.Length ?? 0;
+        int inspectedBalls = _fovCells.Sum(c => c.BallIds.Count);
+        int hiddenBalls = _hiddenBallIds.Count;
         int totalFovs = _fovCells.Count;
 
+        string ballSummary = hiddenBalls > 0
+            ? $"Balls: {inspectedBalls} inspected / {totalBalls} total ({hiddenBalls} masked)"
+            : $"Balls: {inspectedBalls} / {totalBalls}";
+
         SummaryText = $"FOVs: {totalFovs} ({param.FovCountX}x{param.FovCountY}) | " +
-                      $"Balls: {totalBalls} | " +
+                      $"{ballSummary} | " +
                       $"Overlap: {totalFovs - 1} zones, {param.OverlapLengthX:F2}x{param.OverlapLengthY:F2}mm | " +
-                      $"Duplicates: {_duplicates.Count}";
+                      $"Shared (dedup'd): {_duplicates.Count}";
     }
 }
 
