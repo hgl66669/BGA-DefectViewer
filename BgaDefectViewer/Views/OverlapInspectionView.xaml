@@ -45,6 +45,37 @@
                               IsChecked="{Binding EnableOverlapInspection}"
                               FontWeight="Bold" FontSize="13" Margin="0,0,0,8"/>
 
+                    <!-- Display layers -->
+                    <TextBlock Text="Display layers" FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
+                    <CheckBox Content="Camera raw image (actual photo)"
+                              IsChecked="{Binding ShowCameraRawLayer}" Margin="0,0,0,2"/>
+                    <CheckBox Content="FOV (logical inspection)"
+                              IsChecked="{Binding ShowFovLayer}" Margin="0,0,0,2"/>
+                    <CheckBox Content="Effective area (FOV − mask)"
+                              IsChecked="{Binding ShowEffectiveLayer}" Margin="0,0,0,8"/>
+
+                    <!-- Camera raw size -->
+                    <TextBlock Text="Camera raw size [mm]" FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
+                    <ComboBox SelectedIndex="{Binding CameraTypeIndex}" Margin="0,0,0,4">
+                        <ComboBoxItem Content="Normal view (94.52 × 62.87)"/>
+                        <ComboBoxItem Content="Enlarged view (109.66 × 72.95)"/>
+                        <ComboBoxItem Content="Custom"/>
+                    </ComboBox>
+                    <Grid IsEnabled="{Binding IsCameraCustom}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="X:" VerticalAlignment="Center" Margin="0,0,4,2"/>
+                        <TextBox Grid.Column="1" Text="{Binding CameraRawX}" Margin="0,0,8,2" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Column="2" Text="Y:" VerticalAlignment="Center" Margin="0,0,4,2"/>
+                        <TextBox Grid.Column="3" Text="{Binding CameraRawY}" Margin="0,0,0,2" VerticalAlignment="Center"/>
+                    </Grid>
+
+                    <Separator Margin="0,8"/>
+
                     <!-- Execute Button -->
                     <Button Content="Execute" Command="{Binding ExecuteCommand}"
                             FontWeight="Bold" FontSize="14" Padding="12,6" Margin="0,0,0,8"

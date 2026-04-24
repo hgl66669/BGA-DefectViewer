@@ -130,6 +130,98 @@ public class OverlapInspectionViewModel : ViewModelBase
         set => SetProperty(ref _align2FovY, value);
     }
 
+    // ── Camera raw & display layer settings ───────────────────────────
+
+    /// <summary>0 = Normal (94.52×62.87), 1 = Enlarged (109.66×72.95), 2 = Custom.</summary>
+    private int _cameraTypeIndex;
+    public int CameraTypeIndex
+    {
+        get => _cameraTypeIndex;
+        set
+        {
+            if (SetProperty(ref _cameraTypeIndex, value))
+            {
+                ApplyCameraTypePreset();
+                OnPropertyChanged(nameof(IsCameraCustom));
+                RequestRender();
+            }
+        }
+    }
+
+    public bool IsCameraCustom => _cameraTypeIndex == 2;
+
+    private double _cameraRawX = 94.52;
+    public double CameraRawX
+    {
+        get => _cameraRawX;
+        set
+        {
+            if (SetProperty(ref _cameraRawX, value)) RequestRender();
+        }
+    }
+
+    private double _cameraRawY = 62.87;
+    public double CameraRawY
+    {
+        get => _cameraRawY;
+        set
+        {
+            if (SetProperty(ref _cameraRawY, value)) RequestRender();
+        }
+    }
+
+    private bool _showCameraRawLayer;
+    public bool ShowCameraRawLayer
+    {
+        get => _showCameraRawLayer;
+        set
+        {
+            if (SetProperty(ref _showCameraRawLayer, value))
+            {
+                // Camera raw is much wider than FOV — if we just toggled it
+                // on, expand bounds so the extra frame is visible.
+                if (_hasResult) ExpandBoundsForFovGrid();
+                RequestRender();
+            }
+        }
+    }
+
+    private bool _showFovLayer = true;
+    public bool ShowFovLayer
+    {
+        get => _showFovLayer;
+        set
+        {
+            if (SetProperty(ref _showFovLayer, value)) RequestRender();
+        }
+    }
+
+    private bool _showEffectiveLayer = true;
+    public bool ShowEffectiveLayer
+    {
+        get => _showEffectiveLayer;
+        set
+        {
+            if (SetProperty(ref _showEffectiveLayer, value)) RequestRender();
+        }
+    }
+
+    private void ApplyCameraTypePreset()
+    {
+        switch (_cameraTypeIndex)
+        {
+            case 0: // Normal
+                CameraRawX = 94.52;
+                CameraRawY = 62.87;
+                break;
+            case 1: // Enlarged
+                CameraRawX = 109.66;
+                CameraRawY = 72.95;
+                break;
+            // case 2: Custom → keep whatever the user typed
+        }
+    }
+
     // ── Read-only display properties ─────────────────────────────────
 
     private string _summaryText = "";
@@ -317,11 +409,30 @@ public class OverlapInspectionViewModel : ViewModelBase
         double moveDistY = param.MoveDistY;
         double fovUnionX = (param.FovCountX - 1) * moveDistX + param.FovSizeX;
         double fovUnionY = (param.FovCountY - 1) * moveDistY + param.FovSizeY;
-        ResultInfo = $"FOV Count: {param.FovCountX} x {param.FovCountY}\n" +
-                     $"FOV size (each rect): {param.FovSizeX:F2} x {param.FovSizeY:F2} mm\n" +
-                     $"Move Dist: {moveDistX:F2} x {moveDistY:F2} mm\n" +
-                     $"FOV union extent: {fovUnionX:F2} x {fovUnionY:F2} mm\n" +
-                     $"Device Area: {param.DeviceAreaX:F2} x {param.DeviceAreaY:F2} mm";
+
+        // Validation indicators (P4 spec — three quick sanity checks)
+        double unionMarginX = fovUnionX - param.DeviceAreaX;
+        double unionMarginY = fovUnionY - param.DeviceAreaY;
+        string unionCheck = (unionMarginX >= 0 && unionMarginY >= 0) ? "✓" : "✗";
+
+        double rawMarginX = param.CameraRawX - param.FovSizeX;
+        double rawMarginY = param.CameraRawY - param.FovSizeY;
+        string rawCheck = (rawMarginX >= 0 && rawMarginY >= 0) ? "✓" : "✗";
+
+        double maskSlackX = param.OverlapLengthX - 2 * param.BoundaryMaskX;
+        double maskSlackY = param.OverlapLengthY - 2 * param.BoundaryMaskY;
+        string maskCheck = (maskSlackX >= 0 && maskSlackY >= 0) ? "✓" : "⚠";
+
+        ResultInfo =
+            $"FOV Count: {param.FovCountX} x {param.FovCountY}\n" +
+            $"FOV size (each rect): {param.FovSizeX:F2} x {param.FovSizeY:F2} mm\n" +
+            $"Move Dist: {moveDistX:F2} x {moveDistY:F2} mm\n" +
+            $"FOV union extent: {fovUnionX:F2} x {fovUnionY:F2} mm\n" +
+            $"Device Area: {param.DeviceAreaX:F2} x {param.DeviceAreaY:F2} mm\n" +
+            "─────────────\n" +
+            $"{unionCheck} FOV union covers Device Area (margin X {unionMarginX:+0.00;-0.00}, Y {unionMarginY:+0.00;-0.00} mm)\n" +
+            $"{rawCheck} Camera Raw fits FOV (slack X {rawMarginX:+0.00;-0.00}, Y {rawMarginY:+0.00;-0.00} mm)\n" +
+            $"{maskCheck} Overlap ≥ 2·Boundary mask (slack X {maskSlackX:+0.00;-0.00}, Y {maskSlackY:+0.00;-0.00} mm)";
         UpdateFovBallCounts();
         BuildSummaryText(param);
 
@@ -345,6 +456,12 @@ public class OverlapInspectionViewModel : ViewModelBase
         Alignment1FovY = _align1FovY,
         Alignment2FovX = _align2FovX,
         Alignment2FovY = _align2FovY,
+        CameraType = (CameraType)_cameraTypeIndex,
+        CameraRawX = _cameraRawX,
+        CameraRawY = _cameraRawY,
+        ShowCameraRawLayer = _showCameraRawLayer,
+        ShowFovLayer = _showFovLayer,
+        ShowEffectiveLayer = _showEffectiveLayer,
     };
 
     /// <summary>
@@ -374,6 +491,25 @@ public class OverlapInspectionViewModel : ViewModelBase
         if (halfDx > maxX) maxX = halfDx;
         if (-halfDy < minY) minY = -halfDy;
         if (halfDy > maxY) maxY = halfDy;
+
+        // If Camera Raw layer is visible, also include its extent (raw image
+        // is wider than the FOV so the outermost cells extend far beyond).
+        if (_showCameraRawLayer)
+        {
+            double halfRawX = _cameraRawX / 2.0;
+            double halfRawY = _cameraRawY / 2.0;
+            foreach (var cell in _fovCells)
+            {
+                double rawL = cell.CenterX - halfRawX;
+                double rawR = cell.CenterX + halfRawX;
+                double rawB = cell.CenterY - halfRawY;
+                double rawT = cell.CenterY + halfRawY;
+                if (rawL < minX) minX = rawL;
+                if (rawR > maxX) maxX = rawR;
+                if (rawB < minY) minY = rawB;
+                if (rawT > maxY) maxY = rawT;
+            }
+        }
 
         // Add small margin
         double margin = 2.0;

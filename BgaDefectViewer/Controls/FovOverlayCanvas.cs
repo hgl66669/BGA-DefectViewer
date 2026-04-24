@@ -15,8 +15,10 @@ namespace BgaDefectViewer.Controls;
 public class FovOverlayCanvas : FrameworkElement
 {
     private readonly VisualCollection _visuals;
+    private readonly DrawingVisual _cameraRawVisual;    // outermost: actual photo
     private readonly DrawingVisual _deviceAreaVisual;
-    private readonly DrawingVisual _fovGridVisual;
+    private readonly DrawingVisual _fovGridVisual;       // middle: logical FOV
+    private readonly DrawingVisual _effectiveVisual;     // innermost: FOV minus mask
     private readonly DrawingVisual _overlapVisual;
     private readonly DrawingVisual _scanPathVisual;
     private readonly DrawingVisual _centerCrosshairVisual;
@@ -29,8 +31,10 @@ public class FovOverlayCanvas : FrameworkElement
     public FovOverlayCanvas()
     {
         _visuals = new VisualCollection(this);
+        _cameraRawVisual = new DrawingVisual();
         _deviceAreaVisual = new DrawingVisual();
         _fovGridVisual = new DrawingVisual();
+        _effectiveVisual = new DrawingVisual();
         _overlapVisual = new DrawingVisual();
         _scanPathVisual = new DrawingVisual();
         _centerCrosshairVisual = new DrawingVisual();
@@ -38,8 +42,13 @@ public class FovOverlayCanvas : FrameworkElement
         _edgeMaskVisual = new DrawingVisual();
         _duplicateVisual = new DrawingVisual();
 
+        // Z-order (bottom → top): camera raw, device area, fov grid,
+        // effective area, overlap, edge mask, scan path, crosshair, align,
+        // duplicates.
+        _visuals.Add(_cameraRawVisual);
         _visuals.Add(_deviceAreaVisual);
         _visuals.Add(_fovGridVisual);
+        _visuals.Add(_effectiveVisual);
         _visuals.Add(_overlapVisual);
         _visuals.Add(_edgeMaskVisual);
         _visuals.Add(_scanPathVisual);
@@ -65,8 +74,10 @@ public class FovOverlayCanvas : FrameworkElement
     {
         if (_transform == null) { Clear(); return; }
 
+        RenderCameraRaw(cells, parameters);
         RenderDeviceArea(parameters, clusterCenter, clusterSpan);
-        RenderFovGrid(cells);
+        RenderFovGrid(cells, parameters);
+        RenderEffectiveArea(cells, parameters);
         RenderOverlapZones(overlapRegions);
         RenderEdgeMask(cells, parameters);
         RenderScanPath(cells);
@@ -77,14 +88,77 @@ public class FovOverlayCanvas : FrameworkElement
 
     public void Clear()
     {
+        using var dcA = _cameraRawVisual.RenderOpen();
         using var dc0 = _deviceAreaVisual.RenderOpen();
         using var dc1 = _fovGridVisual.RenderOpen();
+        using var dcB = _effectiveVisual.RenderOpen();
         using var dc2 = _overlapVisual.RenderOpen();
         using var dc3 = _scanPathVisual.RenderOpen();
         using var dc4 = _centerCrosshairVisual.RenderOpen();
         using var dc5 = _alignmentVisual.RenderOpen();
         using var dc6 = _edgeMaskVisual.RenderOpen();
         using var dc7 = _duplicateVisual.RenderOpen();
+    }
+
+    // ── Camera Raw Image Layer ───────────────────────────────────────
+    //
+    // Each inspection position captures a raw image larger than the logical
+    // FOV (Normal lens: 94.52×62.87 mm vs FOV 60×60). When this layer is
+    // enabled we draw the raw extent as a very faint dashed rectangle so
+    // the user can see why real machine photos look bigger than the FOV.
+
+    private void RenderCameraRaw(List<FovCell>? cells, OverlapParams? p)
+    {
+        using var dc = _cameraRawVisual.RenderOpen();
+        if (cells == null || p == null || _transform == null) return;
+        if (!p.Enabled || !p.ShowCameraRawLayer) return;
+        if (p.CameraRawX <= 0 || p.CameraRawY <= 0) return;
+
+        double halfRx = p.CameraRawX / 2.0;
+        double halfRy = p.CameraRawY / 2.0;
+
+        foreach (var cell in cells)
+        {
+            var (lx, ty) = _transform.DataToScreen(cell.CenterX - halfRx, cell.CenterY + halfRy);
+            var (rx, by) = _transform.DataToScreen(cell.CenterX + halfRx, cell.CenterY - halfRy);
+            var rect = new Rect(Math.Min(lx, rx), Math.Min(ty, by),
+                                Math.Abs(rx - lx), Math.Abs(by - ty));
+
+            // Very faint fill so heavy overlaps don't dominate the view
+            var fill = new SolidColorBrush(Color.FromArgb(15, 180, 180, 180));
+            fill.Freeze();
+            var pen = new Pen(new SolidColorBrush(Color.FromArgb(110, 200, 200, 200)), 1.0);
+            pen.DashStyle = new DashStyle(new[] { 4.0, 3.0 }, 0);
+            pen.Freeze();
+            dc.DrawRectangle(fill, pen, rect);
+        }
+    }
+
+    // ── Effective Inspection Area (FOV − Boundary mask) ──────────────
+
+    private void RenderEffectiveArea(List<FovCell>? cells, OverlapParams? p)
+    {
+        using var dc = _effectiveVisual.RenderOpen();
+        if (cells == null || p == null || _transform == null) return;
+        if (!p.Enabled || !p.ShowEffectiveLayer) return;
+        if (p.BoundaryMaskX <= 0 && p.BoundaryMaskY <= 0) return;
+
+        double halfEx = (p.FovSizeX - 2 * p.BoundaryMaskX) / 2.0;
+        double halfEy = (p.FovSizeY - 2 * p.BoundaryMaskY) / 2.0;
+        if (halfEx <= 0 || halfEy <= 0) return;
+
+        var pen = new Pen(new SolidColorBrush(Color.FromArgb(220, 80, 255, 80)), 1.0);
+        pen.DashStyle = new DashStyle(new[] { 1.0, 2.0 }, 0);
+        pen.Freeze();
+
+        foreach (var cell in cells)
+        {
+            var (lx, ty) = _transform.DataToScreen(cell.CenterX - halfEx, cell.CenterY + halfEy);
+            var (rx, by) = _transform.DataToScreen(cell.CenterX + halfEx, cell.CenterY - halfEy);
+            var rect = new Rect(Math.Min(lx, rx), Math.Min(ty, by),
+                                Math.Abs(rx - lx), Math.Abs(by - ty));
+            dc.DrawRectangle(null, pen, rect);
+        }
     }
 
     // ── Device Area + Chip Bump Area Outlines ────────────────────────
@@ -166,10 +240,11 @@ public class FovOverlayCanvas : FrameworkElement
 
     // ── FOV Grid Rectangles ──────────────────────────────────────────
 
-    private void RenderFovGrid(List<FovCell>? cells)
+    private void RenderFovGrid(List<FovCell>? cells, OverlapParams? p)
     {
         using var dc = _fovGridVisual.RenderOpen();
         if (cells == null || _transform == null) return;
+        if (p != null && !p.ShowFovLayer) return;
 
         double dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
 
