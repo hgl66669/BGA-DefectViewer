@@ -14,4 +14,10 @@ public class MasterMetadata
 
     /// <summary>Physical substrate dimensions in mm: (X, Y, Z thickness).</summary>
     public (double X, double Y, double Z)? SubstrateSize { get; set; }
+
+    /// <summary>Number of devices laid out on the substrate (N columns × M rows).</summary>
+    public (int N, int M)? SubstrateDeviceCount { get; set; }
+
+    /// <summary>Center-to-center pitch between adjacent devices in mm (X, Y).</summary>
+    public (double X, double Y)? DevicePitch { get; set; }
 }

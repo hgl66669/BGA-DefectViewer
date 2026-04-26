@@ -209,16 +209,23 @@ public class FovOverlayCanvas : FrameworkElement
                      devLabel.Width + 6, devLabel.Height + 2));
         dc.DrawText(devLabel, new Point(devRect.Left + 7, devRect.Bottom - devLabel.Height - 3));
 
-        // Substrate outline (green) — the physical PCB edge. Drawn BEFORE
-        // the Device Area so it sits at the very bottom of the reference
-        // frames (it is usually the largest).
+        // Substrate outline (green) + ghost units. The substrate is drawn
+        // at SubstrateOffset so the focused unit sits on the simulator
+        // origin. For multi-unit layouts every other unit gets a thin
+        // grey ghost outline at its relative pitch position.
         if (p.ShowSubstrate && p.SubstrateSizeX is { } subX && p.SubstrateSizeY is { } subY
             && subX > 0 && subY > 0)
         {
+            // Substrate-center offset in focused-unit-local coordinates.
+            int N = Math.Max(1, p.SubstrateDeviceCountX);
+            int M = Math.Max(1, p.SubstrateDeviceCountY);
+            double subOffX = ((N - 1) / 2.0 - (p.FocusedUnitX - 1)) * p.DevicePitchX;
+            double subOffY = -((M - 1) / 2.0 - (p.FocusedUnitY - 1)) * p.DevicePitchY;
+
             double halfSx = subX / 2.0;
             double halfSy = subY / 2.0;
-            var (slx, sty) = _transform.DataToScreen(-halfSx, halfSy);
-            var (srx, sby) = _transform.DataToScreen(halfSx, -halfSy);
+            var (slx, sty) = _transform.DataToScreen(subOffX - halfSx, subOffY + halfSy);
+            var (srx, sby) = _transform.DataToScreen(subOffX + halfSx, subOffY - halfSy);
             var subRect = new Rect(
                 Math.Min(slx, srx), Math.Min(sty, sby),
                 Math.Abs(srx - slx), Math.Abs(sby - sty));
@@ -228,8 +235,11 @@ public class FovOverlayCanvas : FrameworkElement
             subPen.Freeze();
             dc.DrawRectangle(null, subPen, subRect);
 
+            string subLabelText = (N > 1 || M > 1)
+                ? $"Substrate: {subX:F2} x {subY:F2} mm  ({N}x{M} units, focus ({p.FocusedUnitX},{p.FocusedUnitY}))"
+                : $"Substrate: {subX:F2} x {subY:F2} mm";
             var subLabel = new FormattedText(
-                $"Substrate: {subX:F2} x {subY:F2} mm",
+                subLabelText,
                 CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
                 new Typeface("Consolas"), 11,
                 new SolidColorBrush(Color.FromArgb(255, 0, 220, 80)), dpi);
@@ -237,6 +247,50 @@ public class FovOverlayCanvas : FrameworkElement
                 new Rect(subRect.Right - subLabel.Width - 10, subRect.Top + 4,
                          subLabel.Width + 6, subLabel.Height + 2));
             dc.DrawText(subLabel, new Point(subRect.Right - subLabel.Width - 7, subRect.Top + 5));
+
+            // Ghost outlines for the non-focused units. Each unit is sized
+            // to the chip-bump bbox (preferred) or device area, drawn with
+            // a thin grey solid frame and labelled with its (X, Y) index.
+            if ((N > 1 || M > 1) && p.DevicePitchX > 0 && p.DevicePitchY > 0)
+            {
+                double ghostHalfX = chipSpan.spanX > 0 ? chipSpan.spanX / 2.0 : p.DeviceAreaX / 2.0;
+                double ghostHalfY = chipSpan.spanY > 0 ? chipSpan.spanY / 2.0 : p.DeviceAreaY / 2.0;
+
+                var ghostPen = new Pen(new SolidColorBrush(Color.FromArgb(160, 180, 180, 180)), 1.0);
+                ghostPen.DashStyle = new DashStyle(new[] { 2.0, 2.0 }, 0);
+                ghostPen.Freeze();
+                var ghostFill = new SolidColorBrush(Color.FromArgb(20, 180, 180, 180));
+                ghostFill.Freeze();
+
+                for (int j = 1; j <= M; j++)
+                {
+                    for (int i = 1; i <= N; i++)
+                    {
+                        if (i == p.FocusedUnitX && j == p.FocusedUnitY) continue;
+                        double ucx = (i - p.FocusedUnitX) * p.DevicePitchX;
+                        double ucy = -(j - p.FocusedUnitY) * p.DevicePitchY;
+
+                        var (glx, gty) = _transform.DataToScreen(ucx - ghostHalfX, ucy + ghostHalfY);
+                        var (grx, gby) = _transform.DataToScreen(ucx + ghostHalfX, ucy - ghostHalfY);
+                        var gRect = new Rect(
+                            Math.Min(glx, grx), Math.Min(gty, gby),
+                            Math.Abs(grx - glx), Math.Abs(gby - gty));
+                        dc.DrawRectangle(ghostFill, ghostPen, gRect);
+
+                        var idxLabel = new FormattedText(
+                            $"({i},{j})",
+                            CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                            new Typeface("Consolas"), 11,
+                            new SolidColorBrush(Color.FromArgb(220, 200, 200, 200)), dpi);
+                        // Center the label in the ghost rect
+                        double tx = gRect.Left + (gRect.Width - idxLabel.Width) / 2;
+                        double ty = gRect.Top + (gRect.Height - idxLabel.Height) / 2;
+                        dc.DrawRectangle(bgBrush, null,
+                            new Rect(tx - 2, ty - 1, idxLabel.Width + 4, idxLabel.Height + 2));
+                        dc.DrawText(idxLabel, new Point(tx, ty));
+                    }
+                }
+            }
         }
 
         // Chip bump bounding box — drawn at the ball cluster's true position

@@ -92,4 +92,22 @@ public class OverlapParams
     public double? SubstrateSizeX { get; set; }
     public double? SubstrateSizeY { get; set; }
     public bool ShowSubstrate { get; set; }
+
+    // Multi-unit substrate layout (when one substrate hosts N×M devices
+    // arranged on a pitch grid — KBGA `SubstrateDeviceCount=N,M` and
+    // `DevicePitch=Px,Py`). Null = single-unit substrate (count = 1×1).
+    public int SubstrateDeviceCountX { get; set; } = 1;
+    public int SubstrateDeviceCountY { get; set; } = 1;
+    public double DevicePitchX { get; set; }
+    public double DevicePitchY { get; set; }
+
+    // Which unit on the substrate is the "active" one — i.e., the one whose
+    // center coincides with our device origin (0, 0) and which gets the
+    // full ball / FOV / alignment rendering. Other units are drawn as
+    // simple ghost outlines. 1-based, default (1, 1).
+    public int FocusedUnitX { get; set; } = 1;
+    public int FocusedUnitY { get; set; } = 1;
+
+    public bool HasMultiUnit =>
+        SubstrateDeviceCountX > 1 || SubstrateDeviceCountY > 1;
 }

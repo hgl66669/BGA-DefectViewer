@@ -157,6 +157,58 @@ public class OverlapInspectionViewModel : ViewModelBase
         }
     }
 
+    // Multi-unit substrate layout from .dat (`SubstrateDeviceCount` + `DevicePitch`).
+    private int _substrateDeviceCountX = 1;
+    private int _substrateDeviceCountY = 1;
+    private double _devicePitchX;
+    private double _devicePitchY;
+
+    public int SubstrateDeviceCountX => _substrateDeviceCountX;
+    public int SubstrateDeviceCountY => _substrateDeviceCountY;
+    public double DevicePitchX => _devicePitchX;
+    public double DevicePitchY => _devicePitchY;
+    public bool HasMultiUnit => _substrateDeviceCountX > 1 || _substrateDeviceCountY > 1;
+
+    private string _substrateLayoutText = "";
+    public string SubstrateLayoutText
+    {
+        get => _substrateLayoutText;
+        set => SetProperty(ref _substrateLayoutText, value);
+    }
+
+    // Which unit on the substrate is the "active" one (renders full balls).
+    // Editing this re-runs the overlap simulation so the substrate frame
+    // shifts and the ghost outlines redraw.
+    private int _focusedUnitX = 1;
+    public int FocusedUnitX
+    {
+        get => _focusedUnitX;
+        set
+        {
+            int clamped = Math.Max(1, Math.Min(_substrateDeviceCountX, value));
+            if (SetProperty(ref _focusedUnitX, clamped))
+            {
+                if (_hasResult) ExpandBoundsForFovGrid();
+                RequestRender();
+            }
+        }
+    }
+
+    private int _focusedUnitY = 1;
+    public int FocusedUnitY
+    {
+        get => _focusedUnitY;
+        set
+        {
+            int clamped = Math.Max(1, Math.Min(_substrateDeviceCountY, value));
+            if (SetProperty(ref _focusedUnitY, clamped))
+            {
+                if (_hasResult) ExpandBoundsForFovGrid();
+                RequestRender();
+            }
+        }
+    }
+
     private int _align1FovX = 1;
     public int Align1FovX
     {
@@ -452,6 +504,48 @@ public class OverlapInspectionViewModel : ViewModelBase
         OnPropertyChanged(nameof(SubstrateSizeY));
         OnPropertyChanged(nameof(HasSubstrateSize));
 
+        // Multi-unit substrate layout
+        if (metadata?.SubstrateDeviceCount is { } sdc)
+        {
+            _substrateDeviceCountX = Math.Max(1, sdc.N);
+            _substrateDeviceCountY = Math.Max(1, sdc.M);
+        }
+        else
+        {
+            _substrateDeviceCountX = 1;
+            _substrateDeviceCountY = 1;
+        }
+        if (metadata?.DevicePitch is { } pitch)
+        {
+            _devicePitchX = pitch.X;
+            _devicePitchY = pitch.Y;
+        }
+        else
+        {
+            _devicePitchX = 0;
+            _devicePitchY = 0;
+        }
+        // Reset focused unit to (1,1) so the new master starts fresh
+        _focusedUnitX = 1;
+        _focusedUnitY = 1;
+        if (HasMultiUnit && _devicePitchX > 0 && _devicePitchY > 0)
+        {
+            SubstrateLayoutText =
+                $"Layout: {_substrateDeviceCountX} x {_substrateDeviceCountY} units, " +
+                $"pitch ({_devicePitchX:F3}, {_devicePitchY:F3}) mm";
+        }
+        else
+        {
+            SubstrateLayoutText = "Layout: single unit";
+        }
+        OnPropertyChanged(nameof(SubstrateDeviceCountX));
+        OnPropertyChanged(nameof(SubstrateDeviceCountY));
+        OnPropertyChanged(nameof(DevicePitchX));
+        OnPropertyChanged(nameof(DevicePitchY));
+        OnPropertyChanged(nameof(HasMultiUnit));
+        OnPropertyChanged(nameof(FocusedUnitX));
+        OnPropertyChanged(nameof(FocusedUnitY));
+
         var (cx, cy, sx, sy) = FovGridCalculator.CalculateBallClusterCenter(balls);
         _clusterCenter = (cx, cy);
         _clusterSpan = (sx, sy);
@@ -707,6 +801,12 @@ public class OverlapInspectionViewModel : ViewModelBase
             SubstrateSizeX = _substrateSizeX,
             SubstrateSizeY = _substrateSizeY,
             ShowSubstrate = _showSubstrate && _substrateSizeX.HasValue && _substrateSizeY.HasValue,
+            SubstrateDeviceCountX = _substrateDeviceCountX,
+            SubstrateDeviceCountY = _substrateDeviceCountY,
+            DevicePitchX = _devicePitchX,
+            DevicePitchY = _devicePitchY,
+            FocusedUnitX = _focusedUnitX,
+            FocusedUnitY = _focusedUnitY,
         };
 
         // Resolve FOV-relative .dat offsets to absolute stage coordinates
@@ -773,16 +873,19 @@ public class OverlapInspectionViewModel : ViewModelBase
             if (a2.Y > maxY) maxY = a2.Y;
         }
 
-        // If the substrate outline is being shown, include it so the green
-        // frame is always visible (substrate is typically the largest rect).
+        // If the substrate outline is being shown, include its full extent
+        // (it shifts when the focused unit moves on a multi-unit layout).
         if (_showSubstrate && _substrateSizeX.HasValue && _substrateSizeY.HasValue)
         {
+            var (sxOff, syOff) = SubstrateOffsetForFocus();
             double halfSx = _substrateSizeX.Value / 2.0;
             double halfSy = _substrateSizeY.Value / 2.0;
-            if (-halfSx < minX) minX = -halfSx;
-            if (halfSx > maxX) maxX = halfSx;
-            if (-halfSy < minY) minY = -halfSy;
-            if (halfSy > maxY) maxY = halfSy;
+            double sl = sxOff - halfSx, sr = sxOff + halfSx;
+            double sb = syOff - halfSy, st = syOff + halfSy;
+            if (sl < minX) minX = sl;
+            if (sr > maxX) maxX = sr;
+            if (sb < minY) minY = sb;
+            if (st > maxY) maxY = st;
         }
 
         // If Camera Raw layer is visible, also include its extent (raw image
@@ -835,6 +938,21 @@ public class OverlapInspectionViewModel : ViewModelBase
             ? $"Masked:    {hidden,7:N0}   Shared: {shared,7:N0}"
             : $"Shared:    {shared,7:N0}";
         BallTotalsText = line1 + "\n" + line2;
+    }
+
+    /// <summary>
+    /// Offset (in mm, focused-unit-local coordinates) where the substrate's
+    /// geometric center should be drawn. For a single-unit substrate this
+    /// is (0, 0). For a multi-unit substrate (N×M), the substrate is
+    /// shifted so the focused unit (i_f, j_f) sits on the simulator origin.
+    /// +Y is up, so row index j=1 is the top row.
+    /// </summary>
+    private (double x, double y) SubstrateOffsetForFocus()
+    {
+        if (!HasMultiUnit) return (0, 0);
+        double dx = ((_substrateDeviceCountX - 1) / 2.0 - (_focusedUnitX - 1)) * _devicePitchX;
+        double dy = -((_substrateDeviceCountY - 1) / 2.0 - (_focusedUnitY - 1)) * _devicePitchY;
+        return (dx, dy);
     }
 
     /// <summary>

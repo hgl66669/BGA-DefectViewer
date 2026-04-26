@@ -38,10 +38,12 @@ public static class MasterDatParser
 
         var md = new MasterMetadata
         {
-            AlignmentPoint1Mm = TryParsePair(kv, "AlignmentPoint1mm"),
-            AlignmentPoint2Mm = TryParsePair(kv, "AlignmentPoint2mm"),
-            AlignmentCenterMm = TryParsePair(kv, "AlignmentCenterMm"),
-            SubstrateSize    = TryParseTriple(kv, "SubstrateSize"),
+            AlignmentPoint1Mm     = TryParsePair(kv, "AlignmentPoint1mm"),
+            AlignmentPoint2Mm     = TryParsePair(kv, "AlignmentPoint2mm"),
+            AlignmentCenterMm     = TryParsePair(kv, "AlignmentCenterMm"),
+            SubstrateSize         = TryParseTriple(kv, "SubstrateSize"),
+            SubstrateDeviceCount  = TryParseIntPair(kv, "SubstrateDeviceCount"),
+            DevicePitch           = TryParsePair(kv, "DevicePitch"),
         };
 
         // If none of the fields are present, there is nothing useful to
@@ -49,9 +51,24 @@ public static class MasterDatParser
         if (md.AlignmentPoint1Mm == null &&
             md.AlignmentPoint2Mm == null &&
             md.AlignmentCenterMm == null &&
-            md.SubstrateSize == null) return null;
+            md.SubstrateSize == null &&
+            md.SubstrateDeviceCount == null &&
+            md.DevicePitch == null) return null;
 
         return md;
+    }
+
+    private static (int N, int M)? TryParseIntPair(Dictionary<string, string> kv, string key)
+    {
+        if (!kv.TryGetValue(key, out var val)) return null;
+        var parts = val.Split(',');
+        if (parts.Length < 2) return null;
+        if (int.TryParse(parts[0].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int n) &&
+            int.TryParse(parts[1].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int m))
+        {
+            return (n, m);
+        }
+        return null;
     }
 
     private static (double X, double Y, double Z)? TryParseTriple(
