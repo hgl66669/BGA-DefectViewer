@@ -250,10 +250,19 @@ public class FovOverlayCanvas : FrameworkElement
 
             // ── Substrate center marker + edge-to-center distances ──
             //
-            // Gold cross at substrate center; thin dashed inner rulers from
-            // the left/top edges to that center, labelled with X/2 and Y/2;
-            // and (multi-unit only) a longer dashed connector from substrate
-            // center to the focused unit's center (= simulator origin).
+            // Gold cross + "Sub center" coord caption are drawn ONLY for a
+            // multi-unit substrate where the substrate center is offset
+            // from origin (= focused unit center). For a 1×1 substrate the
+            // two coincide with the green cluster crosshair, so duplicating
+            // a cross/label there just clutters the view.
+            //
+            // The X/2 and Y/2 inner rulers are drawn in BOTH cases — they
+            // tell the user how much margin sits between the chip and the
+            // substrate edge. Their labels are placed near the substrate
+            // edge (not centered on the ruler) so they fall in the margin
+            // region rather than on top of dense ball clusters.
+            bool isMultiUnit = N > 1 || M > 1;
+
             var (subCxS, subCyS) = _transform.DataToScreen(subOffX, subOffY);
             var subCenterColor = Color.FromArgb(235, 255, 215, 0);
             var subCenterBrush = new SolidColorBrush(subCenterColor);
@@ -265,24 +274,35 @@ public class FovOverlayCanvas : FrameworkElement
             subCenterRulerPen.Freeze();
 
             const double crossArm = 9;
-            dc.DrawLine(subCenterPen,
-                new Point(subCxS - crossArm, subCyS),
-                new Point(subCxS + crossArm, subCyS));
-            dc.DrawLine(subCenterPen,
-                new Point(subCxS, subCyS - crossArm),
-                new Point(subCxS, subCyS + crossArm));
-            dc.DrawEllipse(subCenterBrush, null, new Point(subCxS, subCyS), 2.5, 2.5);
+            // Cross + dot only when the marker is NOT going to overlap the
+            // green cluster crosshair — i.e., on a multi-unit substrate.
+            if (isMultiUnit)
+            {
+                dc.DrawLine(subCenterPen,
+                    new Point(subCxS - crossArm, subCyS),
+                    new Point(subCxS + crossArm, subCyS));
+                dc.DrawLine(subCenterPen,
+                    new Point(subCxS, subCyS - crossArm),
+                    new Point(subCxS, subCyS + crossArm));
+                dc.DrawEllipse(subCenterBrush, null, new Point(subCxS, subCyS), 2.5, 2.5);
+            }
 
-            // X/2 ruler — left edge → center, drawn just inside the frame.
+            // X/2 ruler — left edge → center.
             var (leftEdgeXs, _) = _transform.DataToScreen(subOffX - halfSx, subOffY);
+            double xRulerEnd = isMultiUnit ? subCxS - crossArm : subCxS;
             dc.DrawLine(subCenterRulerPen,
                 new Point(leftEdgeXs, subCyS),
-                new Point(subCxS - crossArm, subCyS));
+                new Point(xRulerEnd, subCyS));
+
+            // Position X/2 label ~15 % from the substrate left edge so it
+            // sits in the margin between substrate edge and chip bbox,
+            // not on top of dense balls near the chip center.
             var xHalfLabel = new FormattedText(
                 $"X/2: {halfSx:F2} mm",
                 CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
                 new Typeface("Consolas"), 10, subCenterBrush, dpi);
-            double xLblX = (leftEdgeXs + subCxS - crossArm) / 2 - xHalfLabel.Width / 2;
+            double xLblX = leftEdgeXs + (subCxS - leftEdgeXs) * 0.15 - xHalfLabel.Width / 2;
+            // Drop the label slightly above the ruler line.
             double xLblY = subCyS - xHalfLabel.Height - 3;
             dc.DrawRectangle(bgBrush, null,
                 new Rect(xLblX - 2, xLblY - 1, xHalfLabel.Width + 4, xHalfLabel.Height + 2));
@@ -290,33 +310,41 @@ public class FovOverlayCanvas : FrameworkElement
 
             // Y/2 ruler — top edge → center.
             var (_, topEdgeYs) = _transform.DataToScreen(subOffX, subOffY + halfSy);
+            double yRulerEnd = isMultiUnit ? subCyS - crossArm : subCyS;
             dc.DrawLine(subCenterRulerPen,
                 new Point(subCxS, topEdgeYs),
-                new Point(subCxS, subCyS - crossArm));
+                new Point(subCxS, yRulerEnd));
+
             var yHalfLabel = new FormattedText(
                 $"Y/2: {halfSy:F2} mm",
                 CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
                 new Typeface("Consolas"), 10, subCenterBrush, dpi);
+            // Place Y/2 label ~15 % from the top edge along the ruler;
+            // shift to the right of the ruler so it doesn't sit on the line.
+            double yLblY = topEdgeYs + (subCyS - topEdgeYs) * 0.15 - yHalfLabel.Height / 2;
             double yLblX = subCxS + 5;
-            double yLblY = (topEdgeYs + subCyS - crossArm) / 2 - yHalfLabel.Height / 2;
             dc.DrawRectangle(bgBrush, null,
                 new Rect(yLblX - 2, yLblY - 1, yHalfLabel.Width + 4, yHalfLabel.Height + 2));
             dc.DrawText(yHalfLabel, new Point(yLblX, yLblY));
 
-            // Sub-center coordinate caption (under the cross).
-            var subCoordLabel = new FormattedText(
-                $"Sub center ({subOffX:F2}, {subOffY:F2}) mm",
-                CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
-                new Typeface("Consolas"), 10, subCenterBrush, dpi);
-            double scLblX = subCxS - subCoordLabel.Width / 2;
-            double scLblY = subCyS + crossArm + 4;
-            dc.DrawRectangle(bgBrush, null,
-                new Rect(scLblX - 2, scLblY - 1, subCoordLabel.Width + 4, subCoordLabel.Height + 2));
-            dc.DrawText(subCoordLabel, new Point(scLblX, scLblY));
+            // Sub-center coordinate caption — only when the cross is drawn,
+            // for the same overlap-avoidance reason.
+            if (isMultiUnit)
+            {
+                var subCoordLabel = new FormattedText(
+                    $"Sub center ({subOffX:F2}, {subOffY:F2}) mm",
+                    CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                    new Typeface("Consolas"), 10, subCenterBrush, dpi);
+                double scLblX = subCxS - subCoordLabel.Width / 2;
+                double scLblY = subCyS + crossArm + 4;
+                dc.DrawRectangle(bgBrush, null,
+                    new Rect(scLblX - 2, scLblY - 1, subCoordLabel.Width + 4, subCoordLabel.Height + 2));
+                dc.DrawText(subCoordLabel, new Point(scLblX, scLblY));
+            }
 
             // Connector substrate-center → focused-unit-center (origin).
             // Skipped for a 1×1 substrate (the two points coincide).
-            if (N > 1 || M > 1)
+            if (isMultiUnit)
             {
                 var (focusXs, focusYs) = _transform.DataToScreen(0, 0);
                 var connectorPen = new Pen(new SolidColorBrush(Color.FromArgb(220, 255, 215, 0)), 1.5);
