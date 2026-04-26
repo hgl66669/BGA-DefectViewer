@@ -457,29 +457,17 @@ public class OverlapInspectionViewModel : ViewModelBase
         _clusterSpan = (sx, sy);
         ClusterCenterText = $"Center: ({cx:F3}, {cy:F3}) | Span: {sx:F3} x {sy:F3} mm";
 
-        // Build the alignment-source diagnostic AFTER cluster span is known,
-        // so we can show the ball-edge margin for each fiducial.
+        // Build the alignment-source diagnostic — the .dat values are
+        // FOV-relative offsets; absolute position is computed at Execute
+        // when the FOV grid is known. We still preview the offsets here.
         if (_align1UseMm || _align2UseMm)
         {
             string diag = "";
-            double chipHalfX = sx / 2.0, chipHalfY = sy / 2.0;
             if (_align1UseMm)
-            {
-                double marginChipX = chipHalfX - Math.Abs(_align1MmX);
-                double marginChipY = chipHalfY - Math.Abs(_align1MmY);
-                string side = marginChipX >= 0 && marginChipY >= 0
-                    ? "inside chip bump bbox" : "outside chip bump bbox";
-                diag += $"\n  A1 ({_align1MmX:F3}, {_align1MmY:F3}) mm — {side}, chip-edge margin ({marginChipX:+0.00;-0.00}, {marginChipY:+0.00;-0.00}) mm";
-            }
+                diag += $"\n  A1 offset ({_align1MmX:F3}, {_align1MmY:F3}) mm from owning FOV center → upper-right corner FOV";
             if (_align2UseMm)
-            {
-                double marginChipX = chipHalfX - Math.Abs(_align2MmX);
-                double marginChipY = chipHalfY - Math.Abs(_align2MmY);
-                string side = marginChipX >= 0 && marginChipY >= 0
-                    ? "inside chip bump bbox" : "outside chip bump bbox";
-                diag += $"\n  A2 ({_align2MmX:F3}, {_align2MmY:F3}) mm — {side}, chip-edge margin ({marginChipX:+0.00;-0.00}, {marginChipY:+0.00;-0.00}) mm";
-            }
-            AlignSourceText = "Align from Master.dat:" + diag;
+                diag += $"\n  A2 offset ({_align2MmX:F3}, {_align2MmY:F3}) mm from owning FOV center → lower-left corner FOV";
+            AlignSourceText = "Align from Master.dat (FOV-relative):" + diag;
         }
         else
         {
@@ -571,22 +559,33 @@ public class OverlapInspectionViewModel : ViewModelBase
 
         var param = BuildParams();
 
-        // Derive grid indices from mm positions, if the .dat file registered
-        // real alignment fiducials. Falls back to the auto-diagonal default
-        // for Align 2 when mm is not available.
+        // .dat convention (verified on the real machine): when overlap
+        // inspection is enabled, AlignmentPoint1mm/2mm are stored as the
+        // offset from a CORNER FOV's center, not as absolute stage
+        // coordinates. The owning FOV is fixed by which point it is —
+        //   A1 → (FovCountX, 1)        upper-right
+        //   A2 → (1, FovCountY)        lower-left
+        // Absolute stage position = FOV-center + offset, which moves the
+        // fiducial out toward the substrate margin (matching the photo).
+        // For a 1×1 grid the FOV center is (0,0), so the offset is the
+        // absolute position — same as the no-overlap setup view.
         if (_align1UseMm)
         {
-            var (gx, gy) = MmToGridIndex(_align1MmX, _align1MmY, param);
+            int gx = param.FovCountX, gy = 1;
+            var (cx, cy) = ComputeFovCenterMm(gx, gy, param);
             SetAlign1Internally(gx, gy);
             param.Alignment1FovX = gx;
             param.Alignment1FovY = gy;
+            param.Align1Mm = (cx + _align1MmX, cy + _align1MmY);
         }
         if (_align2UseMm)
         {
-            var (gx, gy) = MmToGridIndex(_align2MmX, _align2MmY, param);
+            int gx = 1, gy = param.FovCountY;
+            var (cx, cy) = ComputeFovCenterMm(gx, gy, param);
             SetAlign2Internally(gx, gy);
             param.Alignment2FovX = gx;
             param.Alignment2FovY = gy;
+            param.Align2Mm = (cx + _align2MmX, cy + _align2MmY);
         }
         else if (_align2AutoTrack)
         {
@@ -680,35 +679,53 @@ public class OverlapInspectionViewModel : ViewModelBase
         RequestRender();
     }
 
-    private OverlapParams BuildParams() => new()
+    private OverlapParams BuildParams()
     {
-        Enabled = _enableOverlapInspection,
-        DeviceAreaX = _deviceAreaX,
-        DeviceAreaY = _deviceAreaY,
-        FovSizeX = _fovSizeX,
-        FovSizeY = _fovSizeY,
-        OverlapLengthX = _overlapLengthX,
-        OverlapLengthY = _overlapLengthY,
-        BoundaryMaskX = _boundaryMaskX,
-        BoundaryMaskY = _boundaryMaskY,
-        IsStaggeredPattern = _isStaggeredPattern,
-        DuplicationAllowancePix = _duplicationAllowancePix,
-        Alignment1FovX = _align1FovX,
-        Alignment1FovY = _align1FovY,
-        Alignment2FovX = _align2FovX,
-        Alignment2FovY = _align2FovY,
-        CameraType = (CameraType)_cameraTypeIndex,
-        CameraRawX = _cameraRawX,
-        CameraRawY = _cameraRawY,
-        ShowCameraRawLayer = _showCameraRawLayer,
-        ShowFovLayer = _showFovLayer,
-        ShowEffectiveLayer = _showEffectiveLayer,
-        Align1Mm = _align1UseMm ? (_align1MmX, _align1MmY) : null,
-        Align2Mm = _align2UseMm ? (_align2MmX, _align2MmY) : null,
-        SubstrateSizeX = _substrateSizeX,
-        SubstrateSizeY = _substrateSizeY,
-        ShowSubstrate = _showSubstrate && _substrateSizeX.HasValue && _substrateSizeY.HasValue,
-    };
+        var p = new OverlapParams
+        {
+            Enabled = _enableOverlapInspection,
+            DeviceAreaX = _deviceAreaX,
+            DeviceAreaY = _deviceAreaY,
+            FovSizeX = _fovSizeX,
+            FovSizeY = _fovSizeY,
+            OverlapLengthX = _overlapLengthX,
+            OverlapLengthY = _overlapLengthY,
+            BoundaryMaskX = _boundaryMaskX,
+            BoundaryMaskY = _boundaryMaskY,
+            IsStaggeredPattern = _isStaggeredPattern,
+            DuplicationAllowancePix = _duplicationAllowancePix,
+            Alignment1FovX = _align1FovX,
+            Alignment1FovY = _align1FovY,
+            Alignment2FovX = _align2FovX,
+            Alignment2FovY = _align2FovY,
+            CameraType = (CameraType)_cameraTypeIndex,
+            CameraRawX = _cameraRawX,
+            CameraRawY = _cameraRawY,
+            ShowCameraRawLayer = _showCameraRawLayer,
+            ShowFovLayer = _showFovLayer,
+            ShowEffectiveLayer = _showEffectiveLayer,
+            SubstrateSizeX = _substrateSizeX,
+            SubstrateSizeY = _substrateSizeY,
+            ShowSubstrate = _showSubstrate && _substrateSizeX.HasValue && _substrateSizeY.HasValue,
+        };
+
+        // Resolve FOV-relative .dat offsets to absolute stage coordinates
+        // using the FOV grid implied by the current params. A1 lives in the
+        // upper-right corner FOV; A2 in the lower-left.
+        if (_align1UseMm)
+        {
+            int gx = p.FovCountX, gy = 1;
+            var (cx, cy) = ComputeFovCenterMm(gx, gy, p);
+            p.Align1Mm = (cx + _align1MmX, cy + _align1MmY);
+        }
+        if (_align2UseMm)
+        {
+            int gx = 1, gy = p.FovCountY;
+            var (cx, cy) = ComputeFovCenterMm(gx, gy, p);
+            p.Align2Mm = (cx + _align2MmX, cy + _align2MmY);
+        }
+        return p;
+    }
 
     /// <summary>
     /// Expand the coordinate transform bounds to include the full FOV grid,
@@ -737,6 +754,24 @@ public class OverlapInspectionViewModel : ViewModelBase
         if (halfDx > maxX) maxX = halfDx;
         if (-halfDy < minY) minY = -halfDy;
         if (halfDy > maxY) maxY = halfDy;
+
+        // Alignment crosses (absolute mm). They can sit beyond the FOV union
+        // when the .dat fiducials place them on the substrate margin.
+        var paramsForBounds = BuildParams();
+        if (paramsForBounds.Align1Mm is { } a1)
+        {
+            if (a1.X < minX) minX = a1.X;
+            if (a1.X > maxX) maxX = a1.X;
+            if (a1.Y < minY) minY = a1.Y;
+            if (a1.Y > maxY) maxY = a1.Y;
+        }
+        if (paramsForBounds.Align2Mm is { } a2)
+        {
+            if (a2.X < minX) minX = a2.X;
+            if (a2.X > maxX) maxX = a2.X;
+            if (a2.Y < minY) minY = a2.Y;
+            if (a2.Y > maxY) maxY = a2.Y;
+        }
 
         // If the substrate outline is being shown, include it so the green
         // frame is always visible (substrate is typically the largest rect).
@@ -803,37 +838,17 @@ public class OverlapInspectionViewModel : ViewModelBase
     }
 
     /// <summary>
-    /// Map an mm position to the containing FOV grid index (1-based).
-    /// Uses the same layout formulas as CalculateFovGrid, so the
-    /// inverse is simple: index_x ≈ 1 + (mmX / MoveDist) + (MaxNum-1)/2.
-    /// Falls back to clamped (1,1)/(MaxNum,MaxNum) if the point lies
-    /// outside every FOV rectangle.
+    /// Stage-coordinate center of FOV (gx, gy), using the same formula
+    /// as CalculateFovGrid. Origin is the device stage origin (0, 0);
+    /// +Y is up, so y=1 is the top row.
     /// </summary>
-    private static (int gx, int gy) MmToGridIndex(double mmX, double mmY, OverlapParams p)
+    private static (double cx, double cy) ComputeFovCenterMm(int gx, int gy, OverlapParams p)
     {
-        int maxX = Math.Max(1, p.FovCountX);
-        int maxY = Math.Max(1, p.FovCountY);
-
-        int gx = 1, gy = 1;
-        double bestDx = double.PositiveInfinity, bestDy = double.PositiveInfinity;
-
-        // Device center is (0,0); FOV (x,y) center = ((x − (1+maxX)/2)·MoveDistX, −(y − (1+maxY)/2)·MoveDistY)
-        double cfx = (1 + maxX) / 2.0;
-        double cfy = (1 + maxY) / 2.0;
-
-        for (int x = 1; x <= maxX; x++)
-        {
-            double cx = (x - cfx) * p.MoveDistX;
-            double d = Math.Abs(mmX - cx);
-            if (d < bestDx) { bestDx = d; gx = x; }
-        }
-        for (int y = 1; y <= maxY; y++)
-        {
-            double cy = -(y - cfy) * p.MoveDistY;
-            double d = Math.Abs(mmY - cy);
-            if (d < bestDy) { bestDy = d; gy = y; }
-        }
-        return (gx, gy);
+        double cfx = (1 + p.FovCountX) / 2.0;
+        double cfy = (1 + p.FovCountY) / 2.0;
+        double cx = (gx - cfx) * p.MoveDistX;
+        double cy = -(gy - cfy) * p.MoveDistY;
+        return (cx, cy);
     }
 
     private void BuildSummaryText(OverlapParams param)
