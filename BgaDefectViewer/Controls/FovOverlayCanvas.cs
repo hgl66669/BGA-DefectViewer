@@ -248,6 +248,97 @@ public class FovOverlayCanvas : FrameworkElement
                          subLabel.Width + 6, subLabel.Height + 2));
             dc.DrawText(subLabel, new Point(subRect.Right - subLabel.Width - 7, subRect.Top + 5));
 
+            // ── Substrate center marker + edge-to-center distances ──
+            //
+            // Gold cross at substrate center; thin dashed inner rulers from
+            // the left/top edges to that center, labelled with X/2 and Y/2;
+            // and (multi-unit only) a longer dashed connector from substrate
+            // center to the focused unit's center (= simulator origin).
+            var (subCxS, subCyS) = _transform.DataToScreen(subOffX, subOffY);
+            var subCenterColor = Color.FromArgb(235, 255, 215, 0);
+            var subCenterBrush = new SolidColorBrush(subCenterColor);
+            subCenterBrush.Freeze();
+            var subCenterPen = new Pen(subCenterBrush, 1.5);
+            subCenterPen.Freeze();
+            var subCenterRulerPen = new Pen(new SolidColorBrush(Color.FromArgb(170, 255, 215, 0)), 1.0);
+            subCenterRulerPen.DashStyle = new DashStyle(new[] { 3.0, 3.0 }, 0);
+            subCenterRulerPen.Freeze();
+
+            const double crossArm = 9;
+            dc.DrawLine(subCenterPen,
+                new Point(subCxS - crossArm, subCyS),
+                new Point(subCxS + crossArm, subCyS));
+            dc.DrawLine(subCenterPen,
+                new Point(subCxS, subCyS - crossArm),
+                new Point(subCxS, subCyS + crossArm));
+            dc.DrawEllipse(subCenterBrush, null, new Point(subCxS, subCyS), 2.5, 2.5);
+
+            // X/2 ruler — left edge → center, drawn just inside the frame.
+            var (leftEdgeXs, _) = _transform.DataToScreen(subOffX - halfSx, subOffY);
+            dc.DrawLine(subCenterRulerPen,
+                new Point(leftEdgeXs, subCyS),
+                new Point(subCxS - crossArm, subCyS));
+            var xHalfLabel = new FormattedText(
+                $"X/2: {halfSx:F2} mm",
+                CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                new Typeface("Consolas"), 10, subCenterBrush, dpi);
+            double xLblX = (leftEdgeXs + subCxS - crossArm) / 2 - xHalfLabel.Width / 2;
+            double xLblY = subCyS - xHalfLabel.Height - 3;
+            dc.DrawRectangle(bgBrush, null,
+                new Rect(xLblX - 2, xLblY - 1, xHalfLabel.Width + 4, xHalfLabel.Height + 2));
+            dc.DrawText(xHalfLabel, new Point(xLblX, xLblY));
+
+            // Y/2 ruler — top edge → center.
+            var (_, topEdgeYs) = _transform.DataToScreen(subOffX, subOffY + halfSy);
+            dc.DrawLine(subCenterRulerPen,
+                new Point(subCxS, topEdgeYs),
+                new Point(subCxS, subCyS - crossArm));
+            var yHalfLabel = new FormattedText(
+                $"Y/2: {halfSy:F2} mm",
+                CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                new Typeface("Consolas"), 10, subCenterBrush, dpi);
+            double yLblX = subCxS + 5;
+            double yLblY = (topEdgeYs + subCyS - crossArm) / 2 - yHalfLabel.Height / 2;
+            dc.DrawRectangle(bgBrush, null,
+                new Rect(yLblX - 2, yLblY - 1, yHalfLabel.Width + 4, yHalfLabel.Height + 2));
+            dc.DrawText(yHalfLabel, new Point(yLblX, yLblY));
+
+            // Sub-center coordinate caption (under the cross).
+            var subCoordLabel = new FormattedText(
+                $"Sub center ({subOffX:F2}, {subOffY:F2}) mm",
+                CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                new Typeface("Consolas"), 10, subCenterBrush, dpi);
+            double scLblX = subCxS - subCoordLabel.Width / 2;
+            double scLblY = subCyS + crossArm + 4;
+            dc.DrawRectangle(bgBrush, null,
+                new Rect(scLblX - 2, scLblY - 1, subCoordLabel.Width + 4, subCoordLabel.Height + 2));
+            dc.DrawText(subCoordLabel, new Point(scLblX, scLblY));
+
+            // Connector substrate-center → focused-unit-center (origin).
+            // Skipped for a 1×1 substrate (the two points coincide).
+            if (N > 1 || M > 1)
+            {
+                var (focusXs, focusYs) = _transform.DataToScreen(0, 0);
+                var connectorPen = new Pen(new SolidColorBrush(Color.FromArgb(220, 255, 215, 0)), 1.5);
+                connectorPen.DashStyle = new DashStyle(new[] { 6.0, 4.0 }, 0);
+                connectorPen.Freeze();
+                dc.DrawLine(connectorPen, new Point(subCxS, subCyS), new Point(focusXs, focusYs));
+
+                double dx = -subOffX, dy = -subOffY; // sub center → focus
+                double dist = Math.Sqrt(dx * dx + dy * dy);
+                var connLabel = new FormattedText(
+                    $"Δ = {dist:F2} mm  ({dx:+0.00;-0.00}, {dy:+0.00;-0.00})",
+                    CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                    new Typeface("Consolas"), 10, subCenterBrush, dpi);
+                double midX = (subCxS + focusXs) / 2;
+                double midY = (subCyS + focusYs) / 2;
+                double clblX = midX - connLabel.Width / 2;
+                double clblY = midY + 4;
+                dc.DrawRectangle(bgBrush, null,
+                    new Rect(clblX - 2, clblY - 1, connLabel.Width + 4, connLabel.Height + 2));
+                dc.DrawText(connLabel, new Point(clblX, clblY));
+            }
+
             // Ghost outlines for the non-focused units. Each unit is sized
             // to the chip-bump bbox (preferred) or device area, drawn with
             // a thin grey solid frame and labelled with its (X, Y) index.
