@@ -89,25 +89,82 @@ public static class FovGridCalculator
     }
 
     /// <summary>
-    /// For each FOV cell, populate BallIds with master balls whose position
-    /// falls within that cell's rectangle.
+    /// Populate each cell's BallIds so every ball is counted exactly once.
+    ///
+    /// Rules (match the real machine's behavior):
+    /// 1. A ball is only "inspected" if it lies in some FOV's EFFECTIVE area
+    ///    (FOV minus boundary mask). Balls that fall only in the mask border
+    ///    are returned in the hidden set and must be skipped when rendering.
+    /// 2. When a ball lies in multiple effective areas (the overlap region
+    ///    between adjacent FOVs), it is assigned to the cell with the
+    ///    HIGHEST scan index — i.e. the later-walked grid. The earlier grid
+    ///    "hands off" those balls.
+    /// 3. Balls outside every FOV rectangle are ignored (not hidden, not
+    ///    counted).
     /// </summary>
-    public static void AssignBallsToFovCells(List<FovCell> cells, MasterBall[] balls)
+    /// <returns>Set of ball IDs that fall inside at least one FOV rect but
+    /// are masked out of every effective area.</returns>
+    public static HashSet<int> AssignBallsToFovCells(
+        List<FovCell> cells, MasterBall[] balls, OverlapParams p)
     {
         foreach (var cell in cells)
             cell.BallIds.Clear();
 
+        double halfEx = Math.Max(0, (p.FovSizeX - 2 * p.BoundaryMaskX) / 2.0);
+        double halfEy = Math.Max(0, (p.FovSizeY - 2 * p.BoundaryMaskY) / 2.0);
+        bool maskActive = p.BoundaryMaskX > 0 || p.BoundaryMaskY > 0;
+
+        var hidden = new HashSet<int>();
+
         foreach (var ball in balls)
         {
+            FovCell? chosen = null;
+            bool inAnyFullFov = false;
+
             foreach (var cell in cells)
             {
-                if (ball.X >= cell.Left && ball.X <= cell.Right &&
-                    ball.Y >= cell.Bottom && ball.Y <= cell.Top)
+                // Inside the FOV rectangle at all?
+                if (ball.X < cell.Left || ball.X > cell.Right ||
+                    ball.Y < cell.Bottom || ball.Y > cell.Top)
+                    continue;
+                inAnyFullFov = true;
+
+                // Inside this cell's effective (mask-cropped) area?
+                bool inEffective;
+                if (maskActive)
                 {
-                    cell.BallIds.Add(ball.Id);
+                    double effLeft = cell.CenterX - halfEx;
+                    double effRight = cell.CenterX + halfEx;
+                    double effBottom = cell.CenterY - halfEy;
+                    double effTop = cell.CenterY + halfEy;
+                    inEffective = ball.X >= effLeft && ball.X <= effRight &&
+                                  ball.Y >= effBottom && ball.Y <= effTop;
                 }
+                else
+                {
+                    inEffective = true;
+                }
+                if (!inEffective) continue;
+
+                // Prefer the latest-scanned cell containing this ball.
+                if (chosen == null || cell.ScanIndex > chosen.ScanIndex)
+                    chosen = cell;
             }
+
+            if (chosen != null)
+            {
+                chosen.BallIds.Add(ball.Id);
+            }
+            else if (inAnyFullFov && maskActive)
+            {
+                // Ball lives inside some FOV but only in its mask border.
+                // It is not inspected; hide it from the display.
+                hidden.Add(ball.Id);
+            }
+            // else: ball is outside every FOV — left alone.
         }
+
+        return hidden;
     }
 
     /// <summary>
@@ -145,44 +202,48 @@ public static class FovGridCalculator
     }
 
     /// <summary>
-    /// Detect duplicate balls: balls that appear in multiple FOV cells
-    /// (i.e., they are in the overlap zone between FOVs).
+    /// Balls that lie inside multiple FOV effective areas at once — i.e.,
+    /// the balls that AssignBallsToFovCells had to deduplicate.
+    ///
+    /// These are reported to the user (orange ring overlay + count) so the
+    /// UI reflects how the earlier grid "hands off" balls to the later grid.
+    /// The ball is recorded once, with FovA = the earliest-scan cell it
+    /// lived in (the one that lost it) and FovB = the latest-scan cell
+    /// (the one that kept it).
     /// </summary>
     public static List<DuplicateBallPair> DetectDuplicateBalls(
-        List<FovCell> cells, MasterBall[] balls)
+        List<FovCell> cells, MasterBall[] balls, OverlapParams p)
     {
         var duplicates = new List<DuplicateBallPair>();
 
-        // Build ball lookup by ID
-        var ballById = new Dictionary<int, MasterBall>();
-        foreach (var b in balls)
-            ballById[b.Id] = b;
+        double halfEx = Math.Max(0, (p.FovSizeX - 2 * p.BoundaryMaskX) / 2.0);
+        double halfEy = Math.Max(0, (p.FovSizeY - 2 * p.BoundaryMaskY) / 2.0);
 
-        // Find balls that appear in multiple FOV cells
-        var ballFovMap = new Dictionary<int, List<FovCell>>();
-        foreach (var cell in cells)
+        foreach (var ball in balls)
         {
-            foreach (var ballId in cell.BallIds)
+            var inCells = new List<FovCell>();
+            foreach (var cell in cells)
             {
-                if (!ballFovMap.ContainsKey(ballId))
-                    ballFovMap[ballId] = new List<FovCell>();
-                ballFovMap[ballId].Add(cell);
+                double effLeft = cell.CenterX - halfEx;
+                double effRight = cell.CenterX + halfEx;
+                double effBottom = cell.CenterY - halfEy;
+                double effTop = cell.CenterY + halfEy;
+                if (ball.X >= effLeft && ball.X <= effRight &&
+                    ball.Y >= effBottom && ball.Y <= effTop)
+                {
+                    inCells.Add(cell);
+                }
             }
-        }
 
-        // Balls in multiple FOVs are duplicates
-        foreach (var (ballId, fovList) in ballFovMap)
-        {
-            if (fovList.Count <= 1) continue;
+            if (inCells.Count <= 1) continue;
 
-            var ball = ballById[ballId];
-            // Record once per ball (any pair of FOVs is sufficient)
+            var ordered = inCells.OrderBy(c => c.ScanIndex).ToList();
             duplicates.Add(new DuplicateBallPair
             {
                 BallA = ball,
                 BallB = ball,
-                FovA = fovList[0].ScanIndex,
-                FovB = fovList[1].ScanIndex,
+                FovA = ordered[0].ScanIndex,
+                FovB = ordered[^1].ScanIndex,
                 Distance = 0,
             });
         }
@@ -191,11 +252,14 @@ public static class FovGridCalculator
     }
 
     /// <summary>
-    /// Validate parameters and return a list of error messages (empty = valid).
+    /// Validate parameters.
+    /// Errors are hard blockers (geometry can't be computed).
+    /// Warnings are advisory (e.g., boundary mask creates inspection dead zones).
     /// </summary>
-    public static List<string> ValidateParams(OverlapParams p)
+    public static (List<string> errors, List<string> warnings) ValidateParams(OverlapParams p)
     {
         var errors = new List<string>();
+        var warnings = new List<string>();
 
         if (p.DeviceAreaX <= 0) errors.Add("Device Area X must be > 0");
         if (p.DeviceAreaY <= 0) errors.Add("Device Area Y must be > 0");
@@ -205,6 +269,8 @@ public static class FovGridCalculator
         if (p.OverlapLengthY < 0) errors.Add("Overlap Length Y must be >= 0");
         if (p.OverlapLengthX >= p.FovSizeX) errors.Add("Overlap Length X must be < FOV X");
         if (p.OverlapLengthY >= p.FovSizeY) errors.Add("Overlap Length Y must be < FOV Y");
+        if (p.BoundaryMaskX < 0) errors.Add("Boundary Mask X must be >= 0");
+        if (p.BoundaryMaskY < 0) errors.Add("Boundary Mask Y must be >= 0");
         if (p.DuplicationAllowancePix < 0) errors.Add("Duplication Allowance must be >= 0");
 
         if (p.Alignment1FovX < 1 || p.Alignment1FovX > p.FovCountX)
@@ -216,6 +282,13 @@ public static class FovGridCalculator
         if (p.Alignment2FovY < 1 || p.Alignment2FovY > p.FovCountY)
             errors.Add($"Align 2 Y must be 1~{p.FovCountY}");
 
-        return errors;
+        // Overlap must be wide enough to cover the boundary mask on both
+        // adjacent FOVs, otherwise a strip at each FOV seam is never inspected.
+        if (p.OverlapLengthX < 2 * p.BoundaryMaskX)
+            warnings.Add($"Overlap X ({p.OverlapLengthX:F3}) < 2 × Boundary Mask X ({p.BoundaryMaskX:F3}): inspection dead zone at FOV seams");
+        if (p.OverlapLengthY < 2 * p.BoundaryMaskY)
+            warnings.Add($"Overlap Y ({p.OverlapLengthY:F3}) < 2 × Boundary Mask Y ({p.BoundaryMaskY:F3}): inspection dead zone at FOV seams");
+
+        return (errors, warnings);
     }
 }

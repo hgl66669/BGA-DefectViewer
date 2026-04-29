@@ -40,11 +40,71 @@
             <ScrollViewer Grid.Column="2" VerticalScrollBarVisibility="Auto">
                 <StackPanel Margin="8">
 
+                    <!-- Enable Overlap Inspection (KBGA Settings checkbox) -->
+                    <CheckBox Content="Enable Overlap Inspection"
+                              IsChecked="{Binding EnableOverlapInspection}"
+                              FontWeight="Bold" FontSize="13" Margin="0,0,0,8"/>
+
+                    <!-- Display layers -->
+                    <TextBlock Text="Display layers" FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
+                    <CheckBox Content="Substrate outline (PCB edge)"
+                              IsChecked="{Binding ShowSubstrate}"
+                              IsEnabled="{Binding HasSubstrateSize}" Margin="0,0,0,2"/>
+                    <TextBlock Text="{Binding SubstrateSizeText}" Foreground="#888888"
+                               FontFamily="Consolas" FontSize="10" TextWrapping="Wrap"
+                               Margin="20,0,0,2"/>
+                    <TextBlock Text="{Binding SubstrateLayoutText}" Foreground="#888888"
+                               FontFamily="Consolas" FontSize="10" TextWrapping="Wrap"
+                               Margin="20,0,0,4"/>
+                    <Grid Margin="20,0,0,4" IsEnabled="{Binding HasMultiUnit}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="Focus unit  X:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                        <TextBox Grid.Column="1" Text="{Binding FocusedUnitX, UpdateSourceTrigger=LostFocus}"
+                                 Margin="0,0,8,0" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Column="2" Text="Y:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                        <TextBox Grid.Column="3" Text="{Binding FocusedUnitY, UpdateSourceTrigger=LostFocus}"
+                                 VerticalAlignment="Center"/>
+                    </Grid>
+                    <CheckBox Content="Camera raw image (actual photo)"
+                              IsChecked="{Binding ShowCameraRawLayer}" Margin="0,0,0,2"/>
+                    <CheckBox Content="FOV (logical inspection)"
+                              IsChecked="{Binding ShowFovLayer}" Margin="0,0,0,2"/>
+                    <CheckBox Content="Effective area (FOV − mask)"
+                              IsChecked="{Binding ShowEffectiveLayer}" Margin="0,0,0,8"/>
+
+                    <!-- Camera raw size -->
+                    <TextBlock Text="Camera raw size [mm]" FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
+                    <ComboBox SelectedIndex="{Binding CameraTypeIndex}" Margin="0,0,0,4">
+                        <ComboBoxItem Content="Normal view (94.52 × 62.87)"/>
+                        <ComboBoxItem Content="Enlarged view (109.66 × 72.95)"/>
+                        <ComboBoxItem Content="Custom"/>
+                    </ComboBox>
+                    <Grid IsEnabled="{Binding IsCameraCustom}">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Text="X:" VerticalAlignment="Center" Margin="0,0,4,2"/>
+                        <TextBox Grid.Column="1" Text="{Binding CameraRawX}" Margin="0,0,8,2" VerticalAlignment="Center"/>
+                        <TextBlock Grid.Column="2" Text="Y:" VerticalAlignment="Center" Margin="0,0,4,2"/>
+                        <TextBox Grid.Column="3" Text="{Binding CameraRawY}" Margin="0,0,0,2" VerticalAlignment="Center"/>
+                    </Grid>
+
+                    <Separator Margin="0,8"/>
+
                     <!-- Execute Button -->
                     <Button Content="Execute" Command="{Binding ExecuteCommand}"
                             FontWeight="Bold" FontSize="14" Padding="12,6" Margin="0,0,0,8"
                             HorizontalAlignment="Stretch"
-                            Background="#0078D7" Foreground="White" BorderThickness="0"/>
+                            Background="#0078D7" Foreground="White" BorderThickness="0"
+                            IsEnabled="{Binding EnableOverlapInspection}"/>
 
                     <!-- Validation errors -->
                     <TextBlock Text="{Binding ValidationErrors}" Foreground="Red"
@@ -91,7 +151,8 @@
                     <Separator Margin="0,8"/>
 
                     <!-- Overlapping length -->
-                    <TextBlock Text="Overlapping length [mm]" FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
+                    <TextBlock Text="Overlapping length with adjacent FOV [mm]"
+                               FontWeight="Bold" FontSize="13" Margin="0,0,0,4" TextWrapping="Wrap"/>
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/>
@@ -108,7 +169,8 @@
                     <Separator Margin="0,8"/>
 
                     <!-- Boundary mask -->
-                    <TextBlock Text="Boundary mask [mm]" FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
+                    <TextBlock Text="Boundary mask length [mm]"
+                               FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/>
@@ -130,24 +192,22 @@
                     <Separator Margin="0,8"/>
 
                     <!-- Ball duplication -->
-                    <TextBlock Text="Ball duplication" FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="Auto"/>
-                            <ColumnDefinition Width="*"/>
-                        </Grid.ColumnDefinitions>
-                        <TextBlock Grid.Column="0" Text="Allowance [pix]:" VerticalAlignment="Center" Margin="0,0,4,2"/>
-                        <TextBox Grid.Column="1" Text="{Binding DuplicationAllowancePix}" Margin="0,0,0,2" VerticalAlignment="Center"/>
-                    </Grid>
+                    <TextBlock Text="Ball duplication judgment allowance [pix]"
+                               FontWeight="Bold" FontSize="13" Margin="0,0,0,4" TextWrapping="Wrap"/>
+                    <TextBox Text="{Binding DuplicationAllowancePix}" Margin="0,0,0,2" VerticalAlignment="Center"/>
                     <TextBlock FontWeight="Bold" FontSize="12" Margin="0,4,0,0"
-                               Foreground="OrangeRed" FontFamily="Consolas">
-                        <Run Text="Duplicates found: "/><Run Text="{Binding TotalDuplicates, Mode=OneWay}"/>
+                               Foreground="OrangeRed" FontFamily="Consolas"
+                               TextWrapping="Wrap">
+                        <Run Text="Shared balls (handed to later FOV): "/><Run Text="{Binding TotalDuplicates, Mode=OneWay}"/>
                     </TextBlock>
 
                     <Separator Margin="0,8"/>
 
                     <!-- Alignment Marks -->
-                    <TextBlock Text="Alignment Marks (FOV position)" FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
+                    <TextBlock Text="Alignment FOV position" FontWeight="Bold" FontSize="13" Margin="0,0,0,4"/>
+                    <TextBlock Text="{Binding AlignSourceText}" Foreground="#888888"
+                               FontFamily="Consolas" FontSize="10" TextWrapping="Wrap"
+                               Margin="0,0,0,4"/>
                     <Grid>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="Auto"/>
@@ -160,14 +220,14 @@
                             <RowDefinition/>
                         </Grid.RowDefinitions>
 
-                        <TextBlock Grid.Row="0" Grid.Column="0" Text="A1 X:" VerticalAlignment="Center" Margin="0,0,4,2"/>
+                        <TextBlock Grid.Row="0" Grid.Column="0" Text="Align. 1  X:" VerticalAlignment="Center" Margin="0,0,4,2"/>
                         <TextBox Grid.Row="0" Grid.Column="1" Text="{Binding Align1FovX}" Margin="0,0,8,2" VerticalAlignment="Center"/>
-                        <TextBlock Grid.Row="0" Grid.Column="2" Text="A1 Y:" VerticalAlignment="Center" Margin="0,0,4,2"/>
+                        <TextBlock Grid.Row="0" Grid.Column="2" Text="Y:" VerticalAlignment="Center" Margin="0,0,4,2"/>
                         <TextBox Grid.Row="0" Grid.Column="3" Text="{Binding Align1FovY}" Margin="0,0,0,2" VerticalAlignment="Center"/>
 
-                        <TextBlock Grid.Row="1" Grid.Column="0" Text="A2 X:" VerticalAlignment="Center" Margin="0,0,4,2"/>
+                        <TextBlock Grid.Row="1" Grid.Column="0" Text="Align. 2  X:" VerticalAlignment="Center" Margin="0,0,4,2"/>
                         <TextBox Grid.Row="1" Grid.Column="1" Text="{Binding Align2FovX}" Margin="0,0,8,2" VerticalAlignment="Center"/>
-                        <TextBlock Grid.Row="1" Grid.Column="2" Text="A2 Y:" VerticalAlignment="Center" Margin="0,0,4,2"/>
+                        <TextBlock Grid.Row="1" Grid.Column="2" Text="Y:" VerticalAlignment="Center" Margin="0,0,4,2"/>
                         <TextBox Grid.Row="1" Grid.Column="3" Text="{Binding Align2FovY}" Margin="0,0,0,2" VerticalAlignment="Center"/>
                     </Grid>
 
@@ -186,6 +246,14 @@
                             <DataGridTextColumn Header="Balls" Binding="{Binding BallCount}" Width="60"/>
                         </DataGrid.Columns>
                     </DataGrid>
+
+                    <!-- Totals summary (inspected / total / masked) -->
+                    <Border BorderBrush="#CCCCCC" BorderThickness="1,0,1,1"
+                            Background="#FAFAFA" Padding="6,4">
+                        <TextBlock Text="{Binding BallTotalsText}"
+                                   FontFamily="Consolas" FontSize="12"
+                                   TextWrapping="Wrap"/>
+                    </Border>
                 </StackPanel>
             </ScrollViewer>
         </Grid>

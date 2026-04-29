@@ -15,7 +15,10 @@ namespace BgaDefectViewer.Controls;
 public class FovOverlayCanvas : FrameworkElement
 {
     private readonly VisualCollection _visuals;
-    private readonly DrawingVisual _fovGridVisual;
+    private readonly DrawingVisual _cameraRawVisual;    // outermost: actual photo
+    private readonly DrawingVisual _deviceAreaVisual;
+    private readonly DrawingVisual _fovGridVisual;       // middle: logical FOV
+    private readonly DrawingVisual _effectiveVisual;     // innermost: FOV minus mask
     private readonly DrawingVisual _overlapVisual;
     private readonly DrawingVisual _scanPathVisual;
     private readonly DrawingVisual _centerCrosshairVisual;
@@ -28,7 +31,10 @@ public class FovOverlayCanvas : FrameworkElement
     public FovOverlayCanvas()
     {
         _visuals = new VisualCollection(this);
+        _cameraRawVisual = new DrawingVisual();
+        _deviceAreaVisual = new DrawingVisual();
         _fovGridVisual = new DrawingVisual();
+        _effectiveVisual = new DrawingVisual();
         _overlapVisual = new DrawingVisual();
         _scanPathVisual = new DrawingVisual();
         _centerCrosshairVisual = new DrawingVisual();
@@ -36,7 +42,13 @@ public class FovOverlayCanvas : FrameworkElement
         _edgeMaskVisual = new DrawingVisual();
         _duplicateVisual = new DrawingVisual();
 
+        // Z-order (bottom → top): camera raw, device area, fov grid,
+        // effective area, overlap, edge mask, scan path, crosshair, align,
+        // duplicates.
+        _visuals.Add(_cameraRawVisual);
+        _visuals.Add(_deviceAreaVisual);
         _visuals.Add(_fovGridVisual);
+        _visuals.Add(_effectiveVisual);
         _visuals.Add(_overlapVisual);
         _visuals.Add(_edgeMaskVisual);
         _visuals.Add(_scanPathVisual);
@@ -62,7 +74,10 @@ public class FovOverlayCanvas : FrameworkElement
     {
         if (_transform == null) { Clear(); return; }
 
-        RenderFovGrid(cells);
+        RenderCameraRaw(cells, parameters);
+        RenderDeviceArea(parameters, clusterCenter, clusterSpan);
+        RenderFovGrid(cells, parameters);
+        RenderEffectiveArea(cells, parameters);
         RenderOverlapZones(overlapRegions);
         RenderEdgeMask(cells, parameters);
         RenderScanPath(cells);
@@ -73,7 +88,10 @@ public class FovOverlayCanvas : FrameworkElement
 
     public void Clear()
     {
+        using var dcA = _cameraRawVisual.RenderOpen();
+        using var dc0 = _deviceAreaVisual.RenderOpen();
         using var dc1 = _fovGridVisual.RenderOpen();
+        using var dcB = _effectiveVisual.RenderOpen();
         using var dc2 = _overlapVisual.RenderOpen();
         using var dc3 = _scanPathVisual.RenderOpen();
         using var dc4 = _centerCrosshairVisual.RenderOpen();
@@ -82,12 +100,354 @@ public class FovOverlayCanvas : FrameworkElement
         using var dc7 = _duplicateVisual.RenderOpen();
     }
 
+    // ── Camera Raw Image Layer ───────────────────────────────────────
+    //
+    // Each inspection position captures a raw image larger than the logical
+    // FOV (Normal lens: 94.52×62.87 mm vs FOV 60×60). When this layer is
+    // enabled we draw the raw extent as a very faint dashed rectangle so
+    // the user can see why real machine photos look bigger than the FOV.
+
+    private void RenderCameraRaw(List<FovCell>? cells, OverlapParams? p)
+    {
+        using var dc = _cameraRawVisual.RenderOpen();
+        if (cells == null || p == null || _transform == null) return;
+        if (!p.Enabled || !p.ShowCameraRawLayer) return;
+        if (p.CameraRawX <= 0 || p.CameraRawY <= 0) return;
+
+        double halfRx = p.CameraRawX / 2.0;
+        double halfRy = p.CameraRawY / 2.0;
+
+        foreach (var cell in cells)
+        {
+            var (lx, ty) = _transform.DataToScreen(cell.CenterX - halfRx, cell.CenterY + halfRy);
+            var (rx, by) = _transform.DataToScreen(cell.CenterX + halfRx, cell.CenterY - halfRy);
+            var rect = new Rect(Math.Min(lx, rx), Math.Min(ty, by),
+                                Math.Abs(rx - lx), Math.Abs(by - ty));
+
+            // Very faint fill so heavy overlaps don't dominate the view
+            var fill = new SolidColorBrush(Color.FromArgb(15, 180, 180, 180));
+            fill.Freeze();
+            var pen = new Pen(new SolidColorBrush(Color.FromArgb(110, 200, 200, 200)), 1.0);
+            pen.DashStyle = new DashStyle(new[] { 4.0, 3.0 }, 0);
+            pen.Freeze();
+            dc.DrawRectangle(fill, pen, rect);
+        }
+    }
+
+    // ── Effective Inspection Area (FOV − Boundary mask) ──────────────
+
+    private void RenderEffectiveArea(List<FovCell>? cells, OverlapParams? p)
+    {
+        using var dc = _effectiveVisual.RenderOpen();
+        if (cells == null || p == null || _transform == null) return;
+        if (!p.Enabled || !p.ShowEffectiveLayer) return;
+        if (p.BoundaryMaskX <= 0 && p.BoundaryMaskY <= 0) return;
+
+        double halfEx = (p.FovSizeX - 2 * p.BoundaryMaskX) / 2.0;
+        double halfEy = (p.FovSizeY - 2 * p.BoundaryMaskY) / 2.0;
+        if (halfEx <= 0 || halfEy <= 0) return;
+
+        var pen = new Pen(new SolidColorBrush(Color.FromArgb(220, 80, 255, 80)), 1.0);
+        pen.DashStyle = new DashStyle(new[] { 1.0, 2.0 }, 0);
+        pen.Freeze();
+
+        foreach (var cell in cells)
+        {
+            var (lx, ty) = _transform.DataToScreen(cell.CenterX - halfEx, cell.CenterY + halfEy);
+            var (rx, by) = _transform.DataToScreen(cell.CenterX + halfEx, cell.CenterY - halfEy);
+            var rect = new Rect(Math.Min(lx, rx), Math.Min(ty, by),
+                                Math.Abs(rx - lx), Math.Abs(by - ty));
+            dc.DrawRectangle(null, pen, rect);
+        }
+    }
+
+    // ── Device Area + Chip Bump Area Outlines ────────────────────────
+    //
+    // Two frames are drawn so the user can see immediately whether the
+    // Device Area input is large enough to enclose the chip bumps, and
+    // how the FOV union extends beyond the device (P4 of the spec).
+    //
+    //   Device Area (input, centered on 0,0): solid cyan dashed frame
+    //   Chip bump bounding box (from balls): fine dotted orange frame
+    //
+    // FOV union is NOT outlined — the four translucent FOV rectangles
+    // already show that extent naturally.
+
+    private void RenderDeviceArea(OverlapParams? p,
+        (double x, double y) chipCenter,
+        (double spanX, double spanY) chipSpan)
+    {
+        using var dc = _deviceAreaVisual.RenderOpen();
+        if (p == null || _transform == null) return;
+        if (!p.Enabled) return;
+
+        double dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
+
+        // Device Area frame — centered at device origin (0, 0) by spec
+        double halfDx = p.DeviceAreaX / 2.0;
+        double halfDy = p.DeviceAreaY / 2.0;
+        var (dlx, dty) = _transform.DataToScreen(-halfDx, halfDy);
+        var (drx, dby) = _transform.DataToScreen(halfDx, -halfDy);
+        var devRect = new Rect(
+            Math.Min(dlx, drx), Math.Min(dty, dby),
+            Math.Abs(drx - dlx), Math.Abs(dby - dty));
+
+        var devPen = new Pen(new SolidColorBrush(Color.FromArgb(220, 0, 220, 220)), 1.5);
+        devPen.DashStyle = DashStyles.Dash;
+        devPen.Freeze();
+        dc.DrawRectangle(null, devPen, devRect);
+
+        var devLabel = new FormattedText(
+            $"Device Area: {p.DeviceAreaX:F2} x {p.DeviceAreaY:F2} mm",
+            CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+            new Typeface("Consolas"), 11,
+            new SolidColorBrush(Color.FromArgb(255, 0, 220, 220)), dpi);
+        var bgBrush = new SolidColorBrush(Color.FromArgb(180, 20, 20, 20));
+        bgBrush.Freeze();
+        dc.DrawRectangle(bgBrush, null,
+            new Rect(devRect.Left + 4, devRect.Bottom - devLabel.Height - 4,
+                     devLabel.Width + 6, devLabel.Height + 2));
+        dc.DrawText(devLabel, new Point(devRect.Left + 7, devRect.Bottom - devLabel.Height - 3));
+
+        // Substrate outline (green) + ghost units. The substrate is drawn
+        // at SubstrateOffset so the focused unit sits on the simulator
+        // origin. For multi-unit layouts every other unit gets a thin
+        // grey ghost outline at its relative pitch position.
+        if (p.ShowSubstrate && p.SubstrateSizeX is { } subX && p.SubstrateSizeY is { } subY
+            && subX > 0 && subY > 0)
+        {
+            // Substrate-center offset in focused-unit-local coordinates.
+            int N = Math.Max(1, p.SubstrateDeviceCountX);
+            int M = Math.Max(1, p.SubstrateDeviceCountY);
+            double subOffX = ((N - 1) / 2.0 - (p.FocusedUnitX - 1)) * p.DevicePitchX;
+            double subOffY = -((M - 1) / 2.0 - (p.FocusedUnitY - 1)) * p.DevicePitchY;
+
+            double halfSx = subX / 2.0;
+            double halfSy = subY / 2.0;
+            var (slx, sty) = _transform.DataToScreen(subOffX - halfSx, subOffY + halfSy);
+            var (srx, sby) = _transform.DataToScreen(subOffX + halfSx, subOffY - halfSy);
+            var subRect = new Rect(
+                Math.Min(slx, srx), Math.Min(sty, sby),
+                Math.Abs(srx - slx), Math.Abs(sby - sty));
+
+            var subPen = new Pen(new SolidColorBrush(Color.FromArgb(230, 0, 220, 80)), 2.0);
+            subPen.DashStyle = new DashStyle(new[] { 6.0, 4.0 }, 0);
+            subPen.Freeze();
+            dc.DrawRectangle(null, subPen, subRect);
+
+            string subLabelText = (N > 1 || M > 1)
+                ? $"Substrate: {subX:F2} x {subY:F2} mm  ({N}x{M} units, focus ({p.FocusedUnitX},{p.FocusedUnitY}))"
+                : $"Substrate: {subX:F2} x {subY:F2} mm";
+            var subLabel = new FormattedText(
+                subLabelText,
+                CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                new Typeface("Consolas"), 11,
+                new SolidColorBrush(Color.FromArgb(255, 0, 220, 80)), dpi);
+            dc.DrawRectangle(bgBrush, null,
+                new Rect(subRect.Right - subLabel.Width - 10, subRect.Top + 4,
+                         subLabel.Width + 6, subLabel.Height + 2));
+            dc.DrawText(subLabel, new Point(subRect.Right - subLabel.Width - 7, subRect.Top + 5));
+
+            // ── Substrate center marker + edge-to-center distances ──
+            //
+            // Gold cross + "Sub center" coord caption are drawn ONLY for a
+            // multi-unit substrate where the substrate center is offset
+            // from origin (= focused unit center). For a 1×1 substrate the
+            // two coincide with the green cluster crosshair, so duplicating
+            // a cross/label there just clutters the view.
+            //
+            // The X/2 and Y/2 inner rulers are drawn in BOTH cases — they
+            // tell the user how much margin sits between the chip and the
+            // substrate edge. Their labels are placed near the substrate
+            // edge (not centered on the ruler) so they fall in the margin
+            // region rather than on top of dense ball clusters.
+            bool isMultiUnit = N > 1 || M > 1;
+
+            var (subCxS, subCyS) = _transform.DataToScreen(subOffX, subOffY);
+            var subCenterColor = Color.FromArgb(235, 255, 215, 0);
+            var subCenterBrush = new SolidColorBrush(subCenterColor);
+            subCenterBrush.Freeze();
+            var subCenterPen = new Pen(subCenterBrush, 1.5);
+            subCenterPen.Freeze();
+            var subCenterRulerPen = new Pen(new SolidColorBrush(Color.FromArgb(170, 255, 215, 0)), 1.0);
+            subCenterRulerPen.DashStyle = new DashStyle(new[] { 3.0, 3.0 }, 0);
+            subCenterRulerPen.Freeze();
+
+            const double crossArm = 9;
+            // Cross + dot only when the marker is NOT going to overlap the
+            // green cluster crosshair — i.e., on a multi-unit substrate.
+            if (isMultiUnit)
+            {
+                dc.DrawLine(subCenterPen,
+                    new Point(subCxS - crossArm, subCyS),
+                    new Point(subCxS + crossArm, subCyS));
+                dc.DrawLine(subCenterPen,
+                    new Point(subCxS, subCyS - crossArm),
+                    new Point(subCxS, subCyS + crossArm));
+                dc.DrawEllipse(subCenterBrush, null, new Point(subCxS, subCyS), 2.5, 2.5);
+            }
+
+            // X/2 ruler — left edge → center.
+            var (leftEdgeXs, _) = _transform.DataToScreen(subOffX - halfSx, subOffY);
+            double xRulerEnd = isMultiUnit ? subCxS - crossArm : subCxS;
+            dc.DrawLine(subCenterRulerPen,
+                new Point(leftEdgeXs, subCyS),
+                new Point(xRulerEnd, subCyS));
+
+            // Position X/2 label ~15 % from the substrate left edge so it
+            // sits in the margin between substrate edge and chip bbox,
+            // not on top of dense balls near the chip center.
+            var xHalfLabel = new FormattedText(
+                $"X/2: {halfSx:F2} mm",
+                CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                new Typeface("Consolas"), 10, subCenterBrush, dpi);
+            double xLblX = leftEdgeXs + (subCxS - leftEdgeXs) * 0.15 - xHalfLabel.Width / 2;
+            // Drop the label slightly above the ruler line.
+            double xLblY = subCyS - xHalfLabel.Height - 3;
+            dc.DrawRectangle(bgBrush, null,
+                new Rect(xLblX - 2, xLblY - 1, xHalfLabel.Width + 4, xHalfLabel.Height + 2));
+            dc.DrawText(xHalfLabel, new Point(xLblX, xLblY));
+
+            // Y/2 ruler — top edge → center.
+            var (_, topEdgeYs) = _transform.DataToScreen(subOffX, subOffY + halfSy);
+            double yRulerEnd = isMultiUnit ? subCyS - crossArm : subCyS;
+            dc.DrawLine(subCenterRulerPen,
+                new Point(subCxS, topEdgeYs),
+                new Point(subCxS, yRulerEnd));
+
+            var yHalfLabel = new FormattedText(
+                $"Y/2: {halfSy:F2} mm",
+                CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                new Typeface("Consolas"), 10, subCenterBrush, dpi);
+            // Place Y/2 label ~15 % from the top edge along the ruler;
+            // shift to the right of the ruler so it doesn't sit on the line.
+            double yLblY = topEdgeYs + (subCyS - topEdgeYs) * 0.15 - yHalfLabel.Height / 2;
+            double yLblX = subCxS + 5;
+            dc.DrawRectangle(bgBrush, null,
+                new Rect(yLblX - 2, yLblY - 1, yHalfLabel.Width + 4, yHalfLabel.Height + 2));
+            dc.DrawText(yHalfLabel, new Point(yLblX, yLblY));
+
+            // Sub-center coordinate caption — only when the cross is drawn,
+            // for the same overlap-avoidance reason.
+            if (isMultiUnit)
+            {
+                var subCoordLabel = new FormattedText(
+                    $"Sub center ({subOffX:F2}, {subOffY:F2}) mm",
+                    CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                    new Typeface("Consolas"), 10, subCenterBrush, dpi);
+                double scLblX = subCxS - subCoordLabel.Width / 2;
+                double scLblY = subCyS + crossArm + 4;
+                dc.DrawRectangle(bgBrush, null,
+                    new Rect(scLblX - 2, scLblY - 1, subCoordLabel.Width + 4, subCoordLabel.Height + 2));
+                dc.DrawText(subCoordLabel, new Point(scLblX, scLblY));
+            }
+
+            // Connector substrate-center → focused-unit-center (origin).
+            // Skipped for a 1×1 substrate (the two points coincide).
+            if (isMultiUnit)
+            {
+                var (focusXs, focusYs) = _transform.DataToScreen(0, 0);
+                var connectorPen = new Pen(new SolidColorBrush(Color.FromArgb(220, 255, 215, 0)), 1.5);
+                connectorPen.DashStyle = new DashStyle(new[] { 6.0, 4.0 }, 0);
+                connectorPen.Freeze();
+                dc.DrawLine(connectorPen, new Point(subCxS, subCyS), new Point(focusXs, focusYs));
+
+                double dx = -subOffX, dy = -subOffY; // sub center → focus
+                double dist = Math.Sqrt(dx * dx + dy * dy);
+                var connLabel = new FormattedText(
+                    $"Δ = {dist:F2} mm  ({dx:+0.00;-0.00}, {dy:+0.00;-0.00})",
+                    CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                    new Typeface("Consolas"), 10, subCenterBrush, dpi);
+                double midX = (subCxS + focusXs) / 2;
+                double midY = (subCyS + focusYs) / 2;
+                double clblX = midX - connLabel.Width / 2;
+                double clblY = midY + 4;
+                dc.DrawRectangle(bgBrush, null,
+                    new Rect(clblX - 2, clblY - 1, connLabel.Width + 4, connLabel.Height + 2));
+                dc.DrawText(connLabel, new Point(clblX, clblY));
+            }
+
+            // Ghost outlines for the non-focused units. Each unit is sized
+            // to the chip-bump bbox (preferred) or device area, drawn with
+            // a thin grey solid frame and labelled with its (X, Y) index.
+            if ((N > 1 || M > 1) && p.DevicePitchX > 0 && p.DevicePitchY > 0)
+            {
+                double ghostHalfX = chipSpan.spanX > 0 ? chipSpan.spanX / 2.0 : p.DeviceAreaX / 2.0;
+                double ghostHalfY = chipSpan.spanY > 0 ? chipSpan.spanY / 2.0 : p.DeviceAreaY / 2.0;
+
+                var ghostPen = new Pen(new SolidColorBrush(Color.FromArgb(160, 180, 180, 180)), 1.0);
+                ghostPen.DashStyle = new DashStyle(new[] { 2.0, 2.0 }, 0);
+                ghostPen.Freeze();
+                var ghostFill = new SolidColorBrush(Color.FromArgb(20, 180, 180, 180));
+                ghostFill.Freeze();
+
+                for (int j = 1; j <= M; j++)
+                {
+                    for (int i = 1; i <= N; i++)
+                    {
+                        if (i == p.FocusedUnitX && j == p.FocusedUnitY) continue;
+                        double ucx = (i - p.FocusedUnitX) * p.DevicePitchX;
+                        double ucy = -(j - p.FocusedUnitY) * p.DevicePitchY;
+
+                        var (glx, gty) = _transform.DataToScreen(ucx - ghostHalfX, ucy + ghostHalfY);
+                        var (grx, gby) = _transform.DataToScreen(ucx + ghostHalfX, ucy - ghostHalfY);
+                        var gRect = new Rect(
+                            Math.Min(glx, grx), Math.Min(gty, gby),
+                            Math.Abs(grx - glx), Math.Abs(gby - gty));
+                        dc.DrawRectangle(ghostFill, ghostPen, gRect);
+
+                        var idxLabel = new FormattedText(
+                            $"({i},{j})",
+                            CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                            new Typeface("Consolas"), 11,
+                            new SolidColorBrush(Color.FromArgb(220, 200, 200, 200)), dpi);
+                        // Center the label in the ghost rect
+                        double tx = gRect.Left + (gRect.Width - idxLabel.Width) / 2;
+                        double ty = gRect.Top + (gRect.Height - idxLabel.Height) / 2;
+                        dc.DrawRectangle(bgBrush, null,
+                            new Rect(tx - 2, ty - 1, idxLabel.Width + 4, idxLabel.Height + 2));
+                        dc.DrawText(idxLabel, new Point(tx, ty));
+                    }
+                }
+            }
+        }
+
+        // Chip bump bounding box — drawn at the ball cluster's true position
+        // (NOT re-centered on 0,0) so misalignment between device origin and
+        // the bumps is visible.
+        if (chipSpan.spanX > 0 && chipSpan.spanY > 0)
+        {
+            double halfCx = chipSpan.spanX / 2.0;
+            double halfCy = chipSpan.spanY / 2.0;
+            var (clx, cty) = _transform.DataToScreen(chipCenter.x - halfCx, chipCenter.y + halfCy);
+            var (crx, cby) = _transform.DataToScreen(chipCenter.x + halfCx, chipCenter.y - halfCy);
+            var chipRect = new Rect(
+                Math.Min(clx, crx), Math.Min(cty, cby),
+                Math.Abs(crx - clx), Math.Abs(cby - cty));
+
+            var chipPen = new Pen(new SolidColorBrush(Color.FromArgb(200, 255, 165, 0)), 1.0);
+            chipPen.DashStyle = new DashStyle(new[] { 1.0, 2.0 }, 0);
+            chipPen.Freeze();
+            dc.DrawRectangle(null, chipPen, chipRect);
+
+            var chipLabel = new FormattedText(
+                $"Chip bump: {chipSpan.spanX:F3} x {chipSpan.spanY:F3} mm",
+                CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+                new Typeface("Consolas"), 10,
+                new SolidColorBrush(Color.FromArgb(255, 255, 165, 0)), dpi);
+            dc.DrawRectangle(bgBrush, null,
+                new Rect(chipRect.Left + 4, chipRect.Top + 4, chipLabel.Width + 6, chipLabel.Height + 2));
+            dc.DrawText(chipLabel, new Point(chipRect.Left + 7, chipRect.Top + 5));
+        }
+    }
+
     // ── FOV Grid Rectangles ──────────────────────────────────────────
 
-    private void RenderFovGrid(List<FovCell>? cells)
+    private void RenderFovGrid(List<FovCell>? cells, OverlapParams? p)
     {
         using var dc = _fovGridVisual.RenderOpen();
         if (cells == null || _transform == null) return;
+        if (p != null && !p.ShowFovLayer) return;
 
         double dpi = VisualTreeHelper.GetDpi(this).PixelsPerDip;
 
@@ -347,32 +707,83 @@ public class FovOverlayCanvas : FrameworkElement
         var bgBrush = new SolidColorBrush(Color.FromArgb(200, 20, 20, 20));
         bgBrush.Freeze();
 
-        // Alignment 1
-        var align1 = cells.FirstOrDefault(c => c.GridX == p.Alignment1FovX && c.GridY == p.Alignment1FovY);
-        if (align1 != null)
-            DrawAlignMark(dc, dpi, bgBrush, align1, "A1", Colors.Magenta);
+        // If the .dat file registered real mm fiducial positions, draw there
+        // directly — this matches the exact spot the real machine aligns to.
+        // Otherwise fall back to the containing FOV's center.
+        bool sameGrid = p.Alignment1FovX == p.Alignment2FovX
+                     && p.Alignment1FovY == p.Alignment2FovY;
 
-        // Alignment 2
-        var align2 = cells.FirstOrDefault(c => c.GridX == p.Alignment2FovX && c.GridY == p.Alignment2FovY);
-        if (align2 != null)
-            DrawAlignMark(dc, dpi, bgBrush, align2, "A2", Colors.Magenta);
+        // Collision offsets only apply when both fall back to FOV centers;
+        // mm positions are already precise so no shift is needed.
+        double a1OffX = 0, a1OffY = 0, a2OffX = 0, a2OffY = 0;
+        if (sameGrid && p.Align1Mm == null && p.Align2Mm == null)
+        {
+            a1OffX = -18; a1OffY = -18;
+            a2OffX = +18; a2OffY = +18;
+        }
+
+        // Alignment 1 (magenta)
+        if (p.Align1Mm is { } a1mm)
+        {
+            DrawAlignMarkMm(dc, dpi, bgBrush, a1mm.X, a1mm.Y, "A1", Colors.Magenta);
+        }
+        else
+        {
+            var align1 = cells.FirstOrDefault(c => c.GridX == p.Alignment1FovX && c.GridY == p.Alignment1FovY);
+            if (align1 != null)
+                DrawAlignMarkAtCell(dc, dpi, bgBrush, align1, "A1", Colors.Magenta, a1OffX, a1OffY);
+        }
+
+        // Alignment 2 (cyan)
+        if (p.Align2Mm is { } a2mm)
+        {
+            DrawAlignMarkMm(dc, dpi, bgBrush, a2mm.X, a2mm.Y, "A2", Colors.Cyan);
+        }
+        else
+        {
+            var align2 = cells.FirstOrDefault(c => c.GridX == p.Alignment2FovX && c.GridY == p.Alignment2FovY);
+            if (align2 != null)
+                DrawAlignMarkAtCell(dc, dpi, bgBrush, align2, "A2", Colors.Cyan, a2OffX, a2OffY);
+        }
     }
 
-    private void DrawAlignMark(DrawingContext dc, double dpi, Brush bgBrush,
-        FovCell cell, string label, Color color)
+    private void DrawAlignMarkAtCell(DrawingContext dc, double dpi, Brush bgBrush,
+        FovCell cell, string label, Color color,
+        double offsetScreenX, double offsetScreenY)
     {
         if (_transform == null) return;
+        var (cx0, cy0) = _transform.DataToScreen(cell.CenterX, cell.CenterY);
+        DrawAlignCross(dc, dpi, bgBrush, cx0 + offsetScreenX, cy0 + offsetScreenY, label, color);
+    }
 
-        var (cx, cy) = _transform.DataToScreen(cell.CenterX, cell.CenterY);
+    private void DrawAlignMarkMm(DrawingContext dc, double dpi, Brush bgBrush,
+        double mmX, double mmY, string label, Color color)
+    {
+        if (_transform == null) return;
+        var (cx, cy) = _transform.DataToScreen(mmX, mmY);
+        DrawAlignCross(dc, dpi, bgBrush, cx, cy, label, color);
+
+        // Tiny mm-coordinate caption under the label so the registered
+        // position is visible on the canvas.
+        var ft = new FormattedText(
+            $"({mmX:F2}, {mmY:F2}) mm",
+            CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
+            new Typeface("Consolas"), 10,
+            new SolidColorBrush(Color.FromArgb(220, color.R, color.G, color.B)), dpi);
+        dc.DrawRectangle(bgBrush, null,
+            new Rect(cx + 20, cy + 8, ft.Width + 4, ft.Height + 2));
+        dc.DrawText(ft, new Point(cx + 22, cy + 9));
+    }
+
+    private static void DrawAlignCross(DrawingContext dc, double dpi, Brush bgBrush,
+        double cx, double cy, string label, Color color)
+    {
         var pen = new Pen(new SolidColorBrush(color), 2.0);
         pen.Freeze();
-
-        double size = 15;
-        // Cross mark
+        const double size = 15;
         dc.DrawLine(pen, new Point(cx - size, cy), new Point(cx + size, cy));
         dc.DrawLine(pen, new Point(cx, cy - size), new Point(cx, cy + size));
 
-        // Label
         var ft = new FormattedText(
             label,
             CultureInfo.InvariantCulture, FlowDirection.LeftToRight,
