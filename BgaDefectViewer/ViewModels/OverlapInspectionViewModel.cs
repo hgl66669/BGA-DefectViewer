@@ -383,6 +383,40 @@ public class OverlapInspectionViewModel : ViewModelBase
                 break;
             // case 2: Custom → keep whatever the user typed
         }
+        // Lens choice changes the standard-FOV threshold, which decides
+        // whether the .dat values are absolute mm or FOV-relative offsets.
+        UpdateAlignSourceText();
+    }
+
+    private void UpdateAlignSourceText()
+    {
+        if (!_align1UseMm && !_align2UseMm)
+        {
+            AlignSourceText = "Align source: grid index (no .dat fiducials)";
+            return;
+        }
+
+        if (ClusterRequiresOverlap())
+        {
+            string diag = "";
+            if (_align1UseMm)
+                diag += $"\n  A1 offset ({_align1MmX:F3}, {_align1MmY:F3}) mm from owning FOV center → upper-right corner FOV";
+            if (_align2UseMm)
+                diag += $"\n  A2 offset ({_align2MmX:F3}, {_align2MmY:F3}) mm from owning FOV center → lower-left corner FOV";
+            AlignSourceText = "Align from Master.dat (FOV-relative):" + diag;
+        }
+        else
+        {
+            var (stdX, stdY) = StandardFovSize();
+            string diag = "";
+            if (_align1UseMm)
+                diag += $"\n  A1 absolute ({_align1MmX:F3}, {_align1MmY:F3}) mm";
+            if (_align2UseMm)
+                diag += $"\n  A2 absolute ({_align2MmX:F3}, {_align2MmY:F3}) mm";
+            AlignSourceText =
+                $"Align from Master.dat (absolute — cluster fits in {stdX:F0}x{stdY:F0} std FOV, no overlap):"
+                + diag;
+        }
     }
 
     // ── Read-only display properties ─────────────────────────────────
@@ -551,22 +585,7 @@ public class OverlapInspectionViewModel : ViewModelBase
         _clusterSpan = (sx, sy);
         ClusterCenterText = $"Center: ({cx:F3}, {cy:F3}) | Span: {sx:F3} x {sy:F3} mm";
 
-        // Build the alignment-source diagnostic — the .dat values are
-        // FOV-relative offsets; absolute position is computed at Execute
-        // when the FOV grid is known. We still preview the offsets here.
-        if (_align1UseMm || _align2UseMm)
-        {
-            string diag = "";
-            if (_align1UseMm)
-                diag += $"\n  A1 offset ({_align1MmX:F3}, {_align1MmY:F3}) mm from owning FOV center → upper-right corner FOV";
-            if (_align2UseMm)
-                diag += $"\n  A2 offset ({_align2MmX:F3}, {_align2MmY:F3}) mm from owning FOV center → lower-left corner FOV";
-            AlignSourceText = "Align from Master.dat (FOV-relative):" + diag;
-        }
-        else
-        {
-            AlignSourceText = "Align source: grid index (no .dat fiducials)";
-        }
+        UpdateAlignSourceText();
 
         // Auto-populate Device Area from ball span + margin
         DeviceAreaX = Math.Ceiling(sx + 2.0);
@@ -663,23 +682,52 @@ public class OverlapInspectionViewModel : ViewModelBase
         // fiducial out toward the substrate margin (matching the photo).
         // For a 1×1 grid the FOV center is (0,0), so the offset is the
         // absolute position — same as the no-overlap setup view.
+        //
+        // BUT: when the ball cluster fits inside a single standard-lens
+        // FOV (60×60 Normal / 75×75 Enlarged), the real machine does not
+        // perform overlap inspection at all and the .dat values are stored
+        // as absolute stage positions. The user can intentionally shrink
+        // FovSize to simulate the multi-FOV walk on such a device, but the
+        // fiducials must still render at their absolute position so the
+        // crosses match the actual machine view.
+        bool overlapRequired = ClusterRequiresOverlap();
         if (_align1UseMm)
         {
-            int gx = param.FovCountX, gy = 1;
-            var (cx, cy) = ComputeFovCenterMm(gx, gy, param);
-            SetAlign1Internally(gx, gy);
-            param.Alignment1FovX = gx;
-            param.Alignment1FovY = gy;
-            param.Align1Mm = (cx + _align1MmX, cy + _align1MmY);
+            if (overlapRequired)
+            {
+                int gx = param.FovCountX, gy = 1;
+                var (cx, cy) = ComputeFovCenterMm(gx, gy, param);
+                SetAlign1Internally(gx, gy);
+                param.Alignment1FovX = gx;
+                param.Alignment1FovY = gy;
+                param.Align1Mm = (cx + _align1MmX, cy + _align1MmY);
+            }
+            else
+            {
+                SetAlign1Internally(1, 1);
+                param.Alignment1FovX = 1;
+                param.Alignment1FovY = 1;
+                param.Align1Mm = (_align1MmX, _align1MmY);
+            }
         }
         if (_align2UseMm)
         {
-            int gx = 1, gy = param.FovCountY;
-            var (cx, cy) = ComputeFovCenterMm(gx, gy, param);
-            SetAlign2Internally(gx, gy);
-            param.Alignment2FovX = gx;
-            param.Alignment2FovY = gy;
-            param.Align2Mm = (cx + _align2MmX, cy + _align2MmY);
+            if (overlapRequired)
+            {
+                int gx = 1, gy = param.FovCountY;
+                var (cx, cy) = ComputeFovCenterMm(gx, gy, param);
+                SetAlign2Internally(gx, gy);
+                param.Alignment2FovX = gx;
+                param.Alignment2FovY = gy;
+                param.Align2Mm = (cx + _align2MmX, cy + _align2MmY);
+            }
+            else
+            {
+                SetAlign2Internally(1, 1);
+                param.Alignment2FovX = 1;
+                param.Alignment2FovY = 1;
+                param.Align2Mm = (_align2MmX, _align2MmY);
+            }
         }
         else if (_align2AutoTrack)
         {
@@ -811,20 +859,67 @@ public class OverlapInspectionViewModel : ViewModelBase
 
         // Resolve FOV-relative .dat offsets to absolute stage coordinates
         // using the FOV grid implied by the current params. A1 lives in the
-        // upper-right corner FOV; A2 in the lower-left.
+        // upper-right corner FOV; A2 in the lower-left. When the cluster
+        // fits in a single standard-lens FOV, overlap is not required and
+        // the .dat values are absolute (see Execute() for full rationale).
+        bool overlapRequired = ClusterRequiresOverlap();
         if (_align1UseMm)
         {
-            int gx = p.FovCountX, gy = 1;
-            var (cx, cy) = ComputeFovCenterMm(gx, gy, p);
-            p.Align1Mm = (cx + _align1MmX, cy + _align1MmY);
+            if (overlapRequired)
+            {
+                int gx = p.FovCountX, gy = 1;
+                var (cx, cy) = ComputeFovCenterMm(gx, gy, p);
+                p.Align1Mm = (cx + _align1MmX, cy + _align1MmY);
+            }
+            else
+            {
+                p.Align1Mm = (_align1MmX, _align1MmY);
+            }
         }
         if (_align2UseMm)
         {
-            int gx = 1, gy = p.FovCountY;
-            var (cx, cy) = ComputeFovCenterMm(gx, gy, p);
-            p.Align2Mm = (cx + _align2MmX, cy + _align2MmY);
+            if (overlapRequired)
+            {
+                int gx = 1, gy = p.FovCountY;
+                var (cx, cy) = ComputeFovCenterMm(gx, gy, p);
+                p.Align2Mm = (cx + _align2MmX, cy + _align2MmY);
+            }
+            else
+            {
+                p.Align2Mm = (_align2MmX, _align2MmY);
+            }
         }
         return p;
+    }
+
+    /// <summary>
+    /// True when the ball cluster does not fit inside a single standard-lens
+    /// FOV — i.e., the real machine has to perform multi-FOV overlap
+    /// inspection. When false, the .dat AlignmentPointXmm fields are stored
+    /// as absolute stage coordinates and must be rendered as-is, even if
+    /// the user has shrunk FovSize to simulate an overlap walk.
+    /// </summary>
+    private bool ClusterRequiresOverlap()
+    {
+        if (_clusterSpan.spanX <= 0 && _clusterSpan.spanY <= 0) return true;
+        var (stdX, stdY) = StandardFovSize();
+        return _clusterSpan.spanX > stdX || _clusterSpan.spanY > stdY;
+    }
+
+    /// <summary>
+    /// Standard FOV size for the selected lens, in mm. Real machine values:
+    ///   Normal lens   → 60 × 60
+    ///   Enlarged lens → 75 × 75
+    /// For Custom raw size we fall back to the user's FOV setting.
+    /// </summary>
+    private (double x, double y) StandardFovSize()
+    {
+        return _cameraTypeIndex switch
+        {
+            0 => (60.0, 60.0),
+            1 => (75.0, 75.0),
+            _ => (_fovSizeX, _fovSizeY),
+        };
     }
 
     /// <summary>
@@ -976,9 +1071,24 @@ public class OverlapInspectionViewModel : ViewModelBase
         int hiddenBalls = _hiddenBallIds.Count;
         int totalFovs = _fovCells.Count;
 
-        string ballSummary = hiddenBalls > 0
-            ? $"Balls: {inspectedBalls} inspected / {totalBalls} total ({hiddenBalls} masked)"
-            : $"Balls: {inspectedBalls} / {totalBalls}";
+        // Multi-unit substrates host N×M copies of the master device; the
+        // substrate-wide ball count = per-unit total × unit count.
+        int unitCount = Math.Max(1, param.SubstrateDeviceCountX) *
+                        Math.Max(1, param.SubstrateDeviceCountY);
+        string ballSummary;
+        if (param.HasMultiUnit && unitCount > 1)
+        {
+            int substrateTotal = totalBalls * unitCount;
+            ballSummary = hiddenBalls > 0
+                ? $"Balls: {inspectedBalls} inspected / {totalBalls} per unit · {substrateTotal:N0} substrate ({param.SubstrateDeviceCountX}x{param.SubstrateDeviceCountY} units, {hiddenBalls} masked)"
+                : $"Balls: {inspectedBalls} / {totalBalls} per unit · {substrateTotal:N0} substrate ({param.SubstrateDeviceCountX}x{param.SubstrateDeviceCountY} units)";
+        }
+        else
+        {
+            ballSummary = hiddenBalls > 0
+                ? $"Balls: {inspectedBalls} inspected / {totalBalls} total ({hiddenBalls} masked)"
+                : $"Balls: {inspectedBalls} / {totalBalls}";
+        }
 
         SummaryText = $"FOVs: {totalFovs} ({param.FovCountX}x{param.FovCountY}) | " +
                       $"{ballSummary} | " +
