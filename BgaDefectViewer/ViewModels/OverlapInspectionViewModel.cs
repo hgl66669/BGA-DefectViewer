@@ -704,9 +704,13 @@ public class OverlapInspectionViewModel : ViewModelBase
             }
             else
             {
-                SetAlign1Internally(1, 1);
-                param.Alignment1FovX = 1;
-                param.Alignment1FovY = 1;
+                // .dat values are absolute mm. The user may still be simulating
+                // a multi-FOV walk (shrunk FovSize), so report the grid cell the
+                // cross actually lands in instead of forcing (1, 1).
+                var (gx, gy) = FindContainingFovIndex(_align1MmX, _align1MmY, param);
+                SetAlign1Internally(gx, gy);
+                param.Alignment1FovX = gx;
+                param.Alignment1FovY = gy;
                 param.Align1Mm = (_align1MmX, _align1MmY);
             }
         }
@@ -723,9 +727,10 @@ public class OverlapInspectionViewModel : ViewModelBase
             }
             else
             {
-                SetAlign2Internally(1, 1);
-                param.Alignment2FovX = 1;
-                param.Alignment2FovY = 1;
+                var (gx, gy) = FindContainingFovIndex(_align2MmX, _align2MmY, param);
+                SetAlign2Internally(gx, gy);
+                param.Alignment2FovX = gx;
+                param.Alignment2FovY = gy;
                 param.Align2Mm = (_align2MmX, _align2MmY);
             }
         }
@@ -1062,6 +1067,22 @@ public class OverlapInspectionViewModel : ViewModelBase
         double cx = (gx - cfx) * p.MoveDistX;
         double cy = -(gy - cfy) * p.MoveDistY;
         return (cx, cy);
+    }
+
+    /// <summary>
+    /// Inverse of ComputeFovCenterMm: find the simulated grid cell whose center
+    /// is closest to the given absolute stage position. Result is clamped to
+    /// the [1, FovCount] range so out-of-range fiducials snap to the edge cell.
+    /// </summary>
+    private static (int gx, int gy) FindContainingFovIndex(double mmX, double mmY, OverlapParams p)
+    {
+        double cfx = (1 + p.FovCountX) / 2.0;
+        double cfy = (1 + p.FovCountY) / 2.0;
+        int gx = p.MoveDistX > 0 ? (int)Math.Round(mmX / p.MoveDistX + cfx) : 1;
+        int gy = p.MoveDistY > 0 ? (int)Math.Round(cfy - mmY / p.MoveDistY) : 1;
+        gx = Math.Max(1, Math.Min(p.FovCountX, gx));
+        gy = Math.Max(1, Math.Min(p.FovCountY, gy));
+        return (gx, gy);
     }
 
     private void BuildSummaryText(OverlapParams param)
