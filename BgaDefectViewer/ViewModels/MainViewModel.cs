@@ -97,6 +97,7 @@ public class MainViewModel : ViewModelBase
     public OverlapInspectionViewModel OverlapInspection { get; }
 
     public ICommand BrowsePathCommand { get; }
+    public ICommand ReloadLotCommand { get; }
 
     public MainViewModel()
     {
@@ -111,6 +112,10 @@ public class MainViewModel : ViewModelBase
         OverlapInspection = new OverlapInspectionViewModel();
 
         BrowsePathCommand = new RelayCommand(BrowsePath);
+        ReloadLotCommand = new RelayCommand(
+            _ => OnLotNumberChanged(),
+            _ => !string.IsNullOrEmpty(SelectedPartNumber)
+              && !string.IsNullOrEmpty(SelectedLotNumber));
 
         // ── 事件訂閱 ──────────────────────────────────────────────────
         LotMonitor.RowDoubleClicked += OnSubstrateRowDoubleClicked;
