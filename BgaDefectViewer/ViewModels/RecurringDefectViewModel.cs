@@ -168,28 +168,37 @@ public class RecurringDefectViewModel : ViewModelBase
         _masterBalls = masterBalls;
         _selectedDieCell = null;
 
-        if (data == null || masterBalls == null)
+        // Reset all UI state up-front so a Reload or Lot switch always clears
+        // the previous Lot's grid, table, and (via RequestRender below) the
+        // defect markers on the canvas — even when the new Lot has no data.
+        DieGrid = new ObservableCollection<RecurringDieCell>();
+        GridColumns = 1;
+        DisplayedBalls = new ObservableCollection<RecurringBallInfo>();
+        LocationsText = "Locations: 0";
+
+        if (masterBalls != null)
         {
-            DieGrid = new ObservableCollection<RecurringDieCell>();
-            GridColumns = 1;
-            LocationsText = "Locations: 0";
-            DisplayedBalls = new ObservableCollection<RecurringBallInfo>();
-            HeaderText = "No data loaded";
+            var (minX, maxX, minY, maxY) = MasterCsvParser.GetBounds(masterBalls);
+            _transform = new CoordinateTransform();
+            _transform.SetBounds(minX, maxX, minY, maxY);
+        }
+        else
+        {
             _transform = null;
-            return;
         }
 
-        var (minX, maxX, minY, maxY) = MasterCsvParser.GetBounds(masterBalls);
-        _transform = new CoordinateTransform();
-        _transform.SetBounds(minX, maxX, minY, maxY);
+        if (data == null || masterBalls == null)
+        {
+            HeaderText = "No data loaded";
+            RequestRender(null);
+            return;
+        }
 
         HeaderText = $"Lot: {data.LotName}  |  {data.SubstrateCount} substrates";
         _filterMinCount = 1;
         OnPropertyChanged(nameof(FilterMinCount));
 
         RebuildDieGrid();
-        DisplayedBalls = new ObservableCollection<RecurringBallInfo>();
-        LocationsText = "Locations: 0";
         RequestRender(null);
     }
 
@@ -218,13 +227,11 @@ public class RecurringDefectViewModel : ViewModelBase
         var die = _data.Dies[row, col];
         var selectedCodes = GetSelectedDefectCodes();
 
-        // Build effective ball list — use per-defect count when filter is active
+        // Build effective ball list. With no defect type selected,
+        // GetCountForCodes returns 0 → the Where filter drops everything,
+        // matching the greyed-out die grid.
         var filtered = die.Balls
-            .Select(b =>
-            {
-                int effectiveCount = selectedCodes.Count == 0 ? b.Count : b.GetCountForCodes(selectedCodes);
-                return (Ball: b, EffCount: effectiveCount);
-            })
+            .Select(b => (Ball: b, EffCount: b.GetCountForCodes(selectedCodes)))
             .Where(x => x.EffCount >= _filterMinCount)
             .OrderByDescending(x => x.EffCount)
             .ToList();
@@ -301,10 +308,11 @@ public class RecurringDefectViewModel : ViewModelBase
         if (Canvas == null || _masterBalls == null || _transform == null) return;
         _transform.SetCanvasSize(Canvas.ActualWidth, Canvas.ActualHeight);
 
-        List<Models.DefectBall>? defects = null;
-        if (balls != null && balls.Count > 0)
-        {
-            defects = balls.Select(b => new Models.DefectBall
+        // Always pass a defects list (empty when no balls), never null.
+        // BallMapCanvas.RenderAll treats null as "keep previous defects",
+        // which would leave stale markers on the canvas after a Lot switch.
+        var defects = (balls ?? Enumerable.Empty<RecurringBallInfo>())
+            .Select(b => new Models.DefectBall
             {
                 BallId     = b.BallId,
                 DefectCode = 1000 + Math.Clamp(b.Count, 1, 10),
@@ -312,7 +320,6 @@ public class RecurringDefectViewModel : ViewModelBase
                 Y          = b.Y,
                 Diameter   = b.Diameter
             }).ToList();
-        }
 
         Canvas.RenderAll(_masterBalls, defects, _transform);
     }
