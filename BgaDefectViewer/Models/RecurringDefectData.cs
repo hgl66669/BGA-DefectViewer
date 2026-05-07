@@ -17,9 +17,13 @@ public class RecurringBallInfo
     public string DisplayX => X.ToString("F3");
     public string DisplayY => Y.ToString("F3");
 
-    /// <summary>Sum of substrate counts for the given defect codes (used for filtered display).</summary>
+    /// <summary>
+    /// Sum of substrate counts for the given defect codes. An empty filter
+    /// means "no defect type selected" → 0 (caller should render nothing),
+    /// not the total count.
+    /// </summary>
     public int GetCountForCodes(ISet<int> codes)
-        => codes.Count == 0 ? Count
+        => codes.Count == 0 ? 0
            : DefectCodeCounts.Where(kv => codes.Contains(kv.Key)).Sum(kv => kv.Value);
 }
 
@@ -37,9 +41,13 @@ public class RecurringDieInfo
     /// <summary>Max ball-level total count; falls back to DieCount when ball data is not yet available.</summary>
     public int MaxBallCount => Balls.Count > 0 ? Balls.Max(b => b.Count) : DieCount;
 
-    /// <summary>Filtered die count: sum of counts for the selected defect type chars.</summary>
+    /// <summary>
+    /// Filtered die count: sum of counts for the selected defect type chars.
+    /// An empty filter means "no defect type selected" → 0, so the cell is
+    /// greyed out instead of showing the total.
+    /// </summary>
     public int GetCountForChars(ISet<char> chars)
-        => chars.Count == 0 ? DieCount
+        => chars.Count == 0 ? 0
            : DefectCounts.Where(kv => chars.Contains(kv.Key)).Sum(kv => kv.Value);
 }
 
