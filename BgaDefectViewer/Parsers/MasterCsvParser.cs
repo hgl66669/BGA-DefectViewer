@@ -1,4 +1,5 @@
 using System.Globalization;
+using BgaDefectViewer.Helpers;
 using BgaDefectViewer.Models;
 
 namespace BgaDefectViewer.Parsers;
@@ -7,7 +8,12 @@ public static class MasterCsvParser
 {
     public static MasterBall[] Parse(string filePath)
     {
-        var lines = File.ReadAllLines(filePath);
+        using var fs = FileLocator.OpenSharedRead(filePath);
+        using var sr = new StreamReader(fs);
+        var list = new List<string>();
+        string? l;
+        while ((l = sr.ReadLine()) != null) list.Add(l);
+        var lines = list.ToArray();
         var balls = new MasterBall[lines.Length];
 
         for (int i = 0; i < lines.Length; i++)

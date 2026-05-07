@@ -1,4 +1,5 @@
 using System.Globalization;
+using BgaDefectViewer.Helpers;
 using BgaDefectViewer.Models;
 
 namespace BgaDefectViewer.Parsers;
@@ -23,7 +24,15 @@ public static class MasterDatParser
         if (!File.Exists(filePath)) return null;
 
         string[] lines;
-        try { lines = File.ReadAllLines(filePath); }
+        try
+        {
+            using var fs = FileLocator.OpenSharedRead(filePath);
+            using var sr = new StreamReader(fs);
+            var buf = new List<string>();
+            string? l;
+            while ((l = sr.ReadLine()) != null) buf.Add(l);
+            lines = buf.ToArray();
+        }
         catch { return null; }
 
         var kv = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);

@@ -36,6 +36,28 @@ public class MainViewModel : ViewModelBase
         set => SetProperty(ref _partNumbers, value);
     }
 
+    public IReadOnlyList<FolderSortOption> SortOptions { get; } = new[]
+    {
+        new FolderSortOption { Mode = FolderSortMode.NameAsc,    Display = "名稱 ↑" },
+        new FolderSortOption { Mode = FolderSortMode.NameDesc,   Display = "名稱 ↓" },
+        new FolderSortOption { Mode = FolderSortMode.TimeNewest, Display = "時間 (新→舊)" },
+        new FolderSortOption { Mode = FolderSortMode.TimeOldest, Display = "時間 (舊→新)" },
+    };
+
+    private FolderSortMode _partSortMode = FolderSortMode.NameAsc;
+    public FolderSortMode PartSortMode
+    {
+        get => _partSortMode;
+        set { if (SetProperty(ref _partSortMode, value)) RefreshPartNumbers(); }
+    }
+
+    private FolderSortMode _lotSortMode = FolderSortMode.NameAsc;
+    public FolderSortMode LotSortMode
+    {
+        get => _lotSortMode;
+        set { if (SetProperty(ref _lotSortMode, value)) RefreshLotNumbers(); }
+    }
+
     private string? _selectedPartNumber;
     public string? SelectedPartNumber
     {
@@ -176,7 +198,7 @@ public class MainViewModel : ViewModelBase
 
     private void OnPathChanged()
     {
-        var parts = FileLocator.GetPartNumbers(AthleteSysPath);
+        var parts = FileLocator.GetPartNumbers(AthleteSysPath, PartSortMode);
         PartNumbers = new ObservableCollection<string>(parts);
         SelectedPartNumber = null;
         LotNumbers.Clear();
@@ -184,11 +206,62 @@ public class MainViewModel : ViewModelBase
         Settings.Clear();
     }
 
+    /// <summary>
+    /// Re-sort the Part# list without losing the current selection or triggering a
+    /// data reload. Called when the user picks a different Part sort mode.
+    /// </summary>
+    private void RefreshPartNumbers()
+    {
+        var current = SelectedPartNumber;
+        var parts = FileLocator.GetPartNumbers(AthleteSysPath, PartSortMode);
+        PartNumbers = new ObservableCollection<string>(parts);
+
+        // Preserve selection without re-firing OnPartNumberChanged (which would reload Master/Lot data)
+        if (current != null && parts.Contains(current))
+        {
+            _selectedPartNumber = current;
+            OnPropertyChanged(nameof(SelectedPartNumber));
+        }
+        else
+        {
+            _selectedPartNumber = null;
+            OnPropertyChanged(nameof(SelectedPartNumber));
+        }
+    }
+
+    /// <summary>
+    /// Re-sort the Lot# list without losing the current selection or triggering a
+    /// data reload. Called when the user picks a different Lot sort mode.
+    /// </summary>
+    private void RefreshLotNumbers()
+    {
+        if (string.IsNullOrEmpty(SelectedPartNumber))
+        {
+            LotNumbers.Clear();
+            return;
+        }
+
+        var current = SelectedLotNumber;
+        var lots = FileLocator.GetLotNumbers(AthleteSysPath, SelectedPartNumber, LotSortMode);
+        LotNumbers = new ObservableCollection<string>(lots);
+
+        if (current != null && lots.Contains(current))
+        {
+            _selectedLotNumber = current;
+            OnPropertyChanged(nameof(SelectedLotNumber));
+        }
+        else
+        {
+            _selectedLotNumber = null;
+            OnPropertyChanged(nameof(SelectedLotNumber));
+        }
+    }
+
     private async void OnPartNumberChanged()
     {
         if (string.IsNullOrEmpty(SelectedPartNumber)) return;
 
-        var lots = FileLocator.GetLotNumbers(AthleteSysPath, SelectedPartNumber);
+        var lots = FileLocator.GetLotNumbers(AthleteSysPath, SelectedPartNumber, LotSortMode);
         LotNumbers = new ObservableCollection<string>(lots);
         SelectedLotNumber = null;
 
@@ -237,37 +310,66 @@ public class MainViewModel : ViewModelBase
                 missing.Add($"Master: {masterCheck.ExpectedPath}");
             }
 
-            // --- Load Summary ---
+            // --- Load Summary (with virtual-day-lot branch) ---
+            bool isVirtualDay = FileLocator.TryDecodeVirtualDayLot(SelectedLotNumber, out var virtualDate);
             var summaryCheck = FileLocator.FindSummaryCsv(AthleteSysPath, SelectedPartNumber, SelectedLotNumber);
+            LotSession? loadedSession = null;
             if (summaryCheck.Found)
             {
-                var session = await Task.Run(() => SummaryCsvParser.ParseFirstLot(summaryCheck.ActualPath!));
-                LotMonitor.Load(session);
-                loaded.Add($"Summary({session.Rows.Count} rows/{session.SubstrateCount} substrates)");
+                loadedSession = await Task.Run(() => isVirtualDay
+                    ? SummaryCsvParser.ParseFilteredByDate(summaryCheck.ActualPath!, virtualDate)
+                    : SummaryCsvParser.ParseFirstLot(summaryCheck.ActualPath!));
             }
             else
             {
-                LotMonitor.Load(new LotSession());
                 missing.Add($"Summary: {summaryCheck.ExpectedPath}");
             }
 
-            // --- Load .map files (Substrate Map tab + Defect Map primary source) ---
-            List<Models.SubstrateMap> substrateMaps = new();
-            var resultDir = FileLocator.GetResultDir(AthleteSysPath, SelectedPartNumber, SelectedLotNumber);
-            if (Directory.Exists(resultDir))
+            // --- Substrate folders (LEFT JOIN source-of-truth for new format) ---
+            var substrateFolders = await Task.Run(() =>
+                FileLocator.EnumerateSubstratesForLot(AthleteSysPath, SelectedPartNumber, SelectedLotNumber));
+
+            // For virtual-day / new-format real lots, augment session.Rows with stub rows for any
+            // substrate folder that has no matching summary entry yet.
+            var session = loadedSession ?? new LotSession { LotName = FileLocator.FormatLotForDisplay(SelectedLotNumber) };
+            if (substrateFolders.Count > 0)
             {
-                var mapFiles = Directory.GetFiles(resultDir, "*.map");
-                if (mapFiles.Length > 0)
+                var existing = session.Rows.Select(r => r.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                int rowIndex = session.Rows.Count;
+                foreach (var f in substrateFolders.Where(f => !existing.Contains(f.SubstrateId)))
                 {
-                    substrateMaps = await Task.Run(() =>
-                        mapFiles.Select(f => SubstrateMapParser.Parse(f)).ToList());
-                    SubstrateMap.Load(substrateMaps);
-                    loaded.Add($"SubstrateMap({mapFiles.Length} maps)");
+                    session.Rows.Add(new SummaryRow
+                    {
+                        Name = f.SubstrateId,
+                        Stage = 1,
+                        Judge = "處理中",
+                        DateTime = "",
+                        RowIndex = rowIndex++,
+                    });
                 }
-                else
-                {
-                    SubstrateMap.Load(Enumerable.Empty<Models.SubstrateMap>());
-                }
+                session.SubstrateCount = session.Rows.Select(r => r.SubstrateId).Distinct().Count();
+                if (session.LotName.Length == 0)
+                    session.LotName = FileLocator.FormatLotForDisplay(SelectedLotNumber);
+            }
+
+            LotMonitor.Load(session);
+            if (loadedSession != null)
+                loaded.Add($"Summary({session.Rows.Count} rows/{session.SubstrateCount} substrates)");
+
+            // --- Load .map files via FileLocator (handles both flat-legacy and timestamp-folder layouts) ---
+            List<Models.SubstrateMap> substrateMaps = new();
+            var mapFiles = await Task.Run(() =>
+                FileLocator.EnumerateMapFilesForLot(AthleteSysPath, SelectedPartNumber, SelectedLotNumber));
+            if (mapFiles.Count > 0)
+            {
+                substrateMaps = await Task.Run(() =>
+                    mapFiles.Select(f => SubstrateMapParser.Parse(f)).ToList());
+                SubstrateMap.Load(substrateMaps);
+                loaded.Add($"SubstrateMap({mapFiles.Count} maps)");
+            }
+            else
+            {
+                SubstrateMap.Load(Enumerable.Empty<Models.SubstrateMap>());
             }
 
             // --- Load Defect Map: calculate from .map files (INSPECTION=1 only); fall back to map.csv ---

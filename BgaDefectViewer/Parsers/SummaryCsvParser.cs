@@ -15,16 +15,7 @@ public static class SummaryCsvParser
     /// </summary>
     public static LotSession ParseFirstLot(string filePath)
     {
-        // Try multiple encodings to handle BOM and different file sources
-        string[] allLines;
-        try
-        {
-            allLines = File.ReadAllLines(filePath, Encoding.UTF8);
-        }
-        catch
-        {
-            allLines = File.ReadAllLines(filePath, Encoding.Default);
-        }
+        var allLines = ReadAllLinesShared(filePath);
 
         // Strip BOM if present on first line
         if (allLines.Length > 0 && allLines[0].Length > 0 && allLines[0][0] == '\uFEFF')
@@ -209,5 +200,60 @@ public static class SummaryCsvParser
     {
         double.TryParse(s.Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out double v);
         return v;
+    }
+
+    /// <summary>
+    /// New format: parse a Part-level rolling `.summary.csv` and return only the rows
+    /// belonging to <paramref name="targetDate"/>. The LotSummary block (if any) is
+    /// recomputed from the filtered subset via <see cref="LotSummaryCalculator"/>.
+    /// </summary>
+    public static LotSession ParseFilteredByDate(string filePath, DateTime targetDate)
+    {
+        var full = ParseFirstLot(filePath);
+        var filtered = new LotSession
+        {
+            LotName = FileLocator.FormatLotForDisplay(FileLocator.EncodeVirtualDayLot(targetDate)),
+        };
+
+        foreach (var row in full.Rows)
+        {
+            if (TryParseRowDate(row.DateTime, out var d) && d.Date == targetDate.Date)
+                filtered.Rows.Add(row);
+        }
+
+        // Re-index after filtering so RowIndex is contiguous (used by some tooltips).
+        for (int i = 0; i < filtered.Rows.Count; i++)
+            filtered.Rows[i].RowIndex = i;
+
+        filtered.SubstrateCount = filtered.Rows.Select(r => r.SubstrateId).Distinct().Count();
+
+        if (filtered.Rows.Count > 0)
+            filtered.Summary = LotSummaryCalculator.Calculate(filtered.Rows);
+
+        return filtered;
+    }
+
+    private static bool TryParseRowDate(string raw, out DateTime date)
+    {
+        date = default;
+        if (string.IsNullOrWhiteSpace(raw)) return false;
+        var s = raw.Trim();
+        // Accept "yyyy/MM/dd HH:mm:ss" or "yyyy/MM/dd HH:mm"
+        string[] formats = { "yyyy/MM/dd HH:mm:ss", "yyyy/MM/dd HH:mm", "yyyy/M/d HH:mm:ss", "yyyy/M/d HH:mm" };
+        return DateTime.TryParseExact(s, formats, CultureInfo.InvariantCulture, DateTimeStyles.None, out date)
+            || DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.None, out date);
+    }
+
+    private static string[] ReadAllLinesShared(string path)
+    {
+        using var fs = FileLocator.OpenSharedRead(path);
+        using var sr = new StreamReader(fs, detectEncodingFromByteOrderMarks: true);
+        var lines = new List<string>();
+        string? line;
+        while ((line = sr.ReadLine()) != null) lines.Add(line);
+        // Strip BOM if present on first line
+        if (lines.Count > 0 && lines[0].Length > 0 && lines[0][0] == '﻿')
+            lines[0] = lines[0].Substring(1);
+        return lines.ToArray();
     }
 }
