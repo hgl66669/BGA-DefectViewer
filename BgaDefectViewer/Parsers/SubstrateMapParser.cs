@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using BgaDefectViewer.Helpers;
 using BgaDefectViewer.Models;
 
 namespace BgaDefectViewer.Parsers;
@@ -8,9 +9,12 @@ public static class SubstrateMapParser
 {
     public static SubstrateMap Parse(string filePath)
     {
-        var lines = File.ReadAllLines(filePath)
-            .Select(l => l.TrimEnd('\r'))
-            .ToList();
+        using var fs = FileLocator.OpenSharedRead(filePath);
+        using var sr = new StreamReader(fs);
+        var raw = new List<string>();
+        string? l;
+        while ((l = sr.ReadLine()) != null) raw.Add(l);
+        var lines = raw.Select(s => s.TrimEnd('\r')).ToList();
 
         var map = new SubstrateMap();
         MapInspection? current = null;

@@ -200,7 +200,16 @@ public class SubstrateViewerViewModel : ViewModelBase
 
         double ppm = totalMaster > 0 ? (defectOnMaster * 1_000_000.0 / totalMaster) : 0;
 
-        SummaryText = $"OK={ok}  Miss={miss}  Shift={shift}  SD={sd}  LD={ld}  ETC={etc}  Bridge={bridge}  Extra={extra}    PPM={ppm:F1}";
+        // CorrectedData (new-format only) — surface as a separate token so the user
+        // sees how many balls were repaired during this round.
+        int corrected = _afaFile?.CorrectedBalls
+            .Count(c => c.InspectionNumber == SelectedInspection && c.Flag == 1) ?? 0;
+        var correctedSuffix = corrected > 0 ? $"  Corrected={corrected}" : "";
+
+        var layoutSuffix = _afaFile?.Layout is SubstrateLayout.SingleUnit ? "" :
+                           _afaFile?.Layout is SubstrateLayout.MultiUnit mu ? $"  [{mu.Cols}×{mu.Rows}]" : "";
+
+        SummaryText = $"OK={ok}  Miss={miss}  Shift={shift}  SD={sd}  LD={ld}  ETC={etc}  Bridge={bridge}  Extra={extra}    PPM={ppm:F1}{correctedSuffix}{layoutSuffix}";
     }
 
     public void RequestRender()

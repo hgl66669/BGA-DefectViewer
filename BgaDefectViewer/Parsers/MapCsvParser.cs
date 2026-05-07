@@ -1,3 +1,4 @@
+using BgaDefectViewer.Helpers;
 using BgaDefectViewer.Models;
 
 namespace BgaDefectViewer.Parsers;
@@ -7,7 +8,12 @@ public static class MapCsvParser
     public static DieMapData Parse(string filePath)
     {
         var data = new DieMapData();
-        var lines = File.ReadAllLines(filePath);
+        using var fs = FileLocator.OpenSharedRead(filePath);
+        using var sr = new StreamReader(fs);
+        var list = new List<string>();
+        string? l;
+        while ((l = sr.ReadLine()) != null) list.Add(l);
+        var lines = list.ToArray();
         int i = 0;
 
         // Parse header

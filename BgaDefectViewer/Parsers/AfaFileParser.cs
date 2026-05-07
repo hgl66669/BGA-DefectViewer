@@ -1,4 +1,5 @@
 using System.Globalization;
+using BgaDefectViewer.Helpers;
 using BgaDefectViewer.Models;
 
 namespace BgaDefectViewer.Parsers;
@@ -11,14 +12,19 @@ public static class AfaFileParser
         int currentInspNumber = 0;
         InspectionResult? currentInsp = null;
 
-        foreach (var line in File.ReadAllLines(filePath))
+        foreach (var line in ReadAllLinesShared(filePath))
         {
             if (string.IsNullOrWhiteSpace(line)) continue;
 
             if (line.StartsWith("StartTime;"))
                 afa.StartTime = line.Substring("StartTime;".Length).Trim();
             else if (line.StartsWith("Mapfile;"))
+            {
                 afa.MapFile = line.Substring("Mapfile;".Length).Trim();
+                // New format encodes substrate layout here (e.g. `0C,0R`); legacy carries
+                // a real `.map` filename — FromMapfileToken returns SingleUnit for legacy.
+                afa.Layout = SubstrateLayout.FromMapfileToken(afa.MapFile);
+            }
             else if (line.StartsWith("Recipe;"))
                 afa.Recipe = line.Substring("Recipe;".Length).Trim();
             else if (line.StartsWith("LotNo;"))
@@ -73,6 +79,25 @@ public static class AfaFileParser
                     });
                 }
             }
+            else if (line.StartsWith("CorrectedData;"))
+            {
+                // New-format token — repair confirmation for a ball that was defective in
+                // the previous inspection round. Bound to the current inspection number
+                // (NOT to the most recent Data; line — the relationship is round-level).
+                var parts = line.Substring("CorrectedData;".Length).Split(',');
+                if (parts.Length >= 5)
+                {
+                    afa.CorrectedBalls.Add(new CorrectedBall
+                    {
+                        InspectionNumber = currentInspNumber,
+                        DieIndex = ParseInt(parts[0]),
+                        DieCol   = parts[1].Trim(),
+                        DieRow   = parts[2].Trim(),
+                        BallId   = ParseInt(parts[3]),
+                        Flag     = ParseInt(parts[4]),
+                    });
+                }
+            }
             else if (line.StartsWith("EndTime;"))
                 afa.EndTime = line.Substring("EndTime;".Length).Trim();
             else if (line.StartsWith("EndInspection;"))
@@ -92,5 +117,16 @@ public static class AfaFileParser
     {
         double.TryParse(s.Trim(), NumberStyles.Any, CultureInfo.InvariantCulture, out double v);
         return v;
+    }
+
+    /// <summary>Read with FileShare.ReadWrite so the device can keep writing while we read.</summary>
+    private static IEnumerable<string> ReadAllLinesShared(string path)
+    {
+        using var fs = FileLocator.OpenSharedRead(path);
+        using var sr = new StreamReader(fs);
+        var lines = new List<string>();
+        string? line;
+        while ((line = sr.ReadLine()) != null) lines.Add(line);
+        return lines;
     }
 }

@@ -17,8 +17,10 @@
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="160"/>
+                <ColumnDefinition Width="120"/>
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="160"/>
+                <ColumnDefinition Width="120"/>
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <TextBlock Grid.Column="0" Text="Source:" VerticalAlignment="Center" Margin="4,0"/>
@@ -29,10 +31,20 @@
             <TextBlock Grid.Column="3" Text="Part#:" VerticalAlignment="Center" Margin="12,0,4,0"/>
             <ComboBox Grid.Column="4" ItemsSource="{Binding PartNumbers}"
                       SelectedItem="{Binding SelectedPartNumber}" VerticalAlignment="Center"/>
-            <TextBlock Grid.Column="5" Text="Lot#:" VerticalAlignment="Center" Margin="12,0,4,0"/>
-            <ComboBox Grid.Column="6" ItemsSource="{Binding LotNumbers}"
+            <ComboBox Grid.Column="5" ItemsSource="{Binding SortOptions}"
+                      DisplayMemberPath="Display" SelectedValuePath="Mode"
+                      SelectedValue="{Binding PartSortMode}"
+                      ToolTip="Part# 排序方式"
+                      VerticalAlignment="Center" Margin="4,0,0,0"/>
+            <TextBlock Grid.Column="6" Text="Lot#:" VerticalAlignment="Center" Margin="12,0,4,0"/>
+            <ComboBox Grid.Column="7" ItemsSource="{Binding LotNumbers}"
                       SelectedItem="{Binding SelectedLotNumber}" VerticalAlignment="Center"/>
-            <Button Grid.Column="7" Content="Reload" Command="{Binding ReloadLotCommand}"
+            <ComboBox Grid.Column="8" ItemsSource="{Binding SortOptions}"
+                      DisplayMemberPath="Display" SelectedValuePath="Mode"
+                      SelectedValue="{Binding LotSortMode}"
+                      ToolTip="Lot# 排序方式"
+                      VerticalAlignment="Center" Margin="4,0,0,0"/>
+            <Button Grid.Column="9" Content="Reload" Command="{Binding ReloadLotCommand}"
                     ToolTip="Re-read all files for the current Part# / Lot#"
                     VerticalAlignment="Center" Margin="4,0" Padding="8,2"/>
         </Grid>
