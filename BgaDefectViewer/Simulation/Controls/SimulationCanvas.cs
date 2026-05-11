@@ -3,7 +3,6 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using BgaDefectViewer.Helpers;
-using BgaDefectViewer.Models;
 using BgaDefectViewer.Simulation.Layouts;
 using BgaDefectViewer.Simulation.Models;
 
@@ -23,23 +22,11 @@ public class SimulationCanvas : FrameworkElement
     private CoordinateTransform? _transform;
     private IPadLayout? _layout;
 
-    private bool _isMiddleDragging;
+    private bool _isPanning;
     private Point _lastMousePos;
 
-    // Pre-built frozen brushes — NEVER allocate per-ball at 1M scale
+    // Pre-built frozen background brush. Pixel writes use raw BGRA32; no per-ball brush allocation.
     private static readonly SolidColorBrush BgBrush = CreateFrozenBrush(Color.FromRgb(0x1E, 0x1E, 0x1E));
-    private static readonly SolidColorBrush MasterBrush = CreateFrozenBrush(Color.FromRgb(0x70, 0x70, 0x70));
-    private static readonly SolidColorBrush OkBrush = CreateFrozenBrush(Color.FromRgb(0xC0, 0xC0, 0xC0));
-    private static readonly SolidColorBrush MissingBrush = CreateFrozenBrush(DefectTypes.GetCanvasColor(2)); // Cyan
-    private static readonly SolidColorBrush ShiftBrush = CreateFrozenBrush(DefectTypes.GetCanvasColor(3));   // Yellow
-    private static readonly Pen MissingRingPen = CreateFrozenPen(MissingBrush, 1.5);
-
-    // BGRA32 little-endian: 0xAARRGGBB
-    private const uint BgraOk = 0xFFC0C0C0u;
-    private const uint BgraMissing = 0xFF00FFFFu;
-    private const uint BgraShift = 0xFFFFFF00u;
-
-    private const double LodRadiusThreshold = 3.0;
 
     // KBGA reference: max 500 balls per detection batch is a DETECTION constraint,
     // NOT a rendering one — we may render millions per frame.
@@ -49,13 +36,6 @@ public class SimulationCanvas : FrameworkElement
         var b = new SolidColorBrush(c);
         b.Freeze();
         return b;
-    }
-
-    static Pen CreateFrozenPen(SolidColorBrush brush, double thickness)
-    {
-        var p = new Pen(brush, thickness);
-        p.Freeze();
-        return p;
     }
 
     public SimulationCanvas()
@@ -68,7 +48,10 @@ public class SimulationCanvas : FrameworkElement
         };
         ClipToBounds = true;
         Focusable = true;
+        Cursor = System.Windows.Input.Cursors.Hand;
         MouseWheel += OnMouseWheel;
+        MouseLeftButtonDown += OnMouseLeftButtonDown;
+        MouseLeftButtonUp += OnMouseLeftButtonUp;
         MouseDown += OnMouseDown;
         MouseUp += OnMouseUp;
         MouseMove += OnMouseMove;
@@ -125,9 +108,9 @@ public class SimulationCanvas : FrameworkElement
         if (ActualWidth <= 0 || ActualHeight <= 0) return;
 
         RenderBackground();
-        double radius = _transform.BallRadiusPixels(_frame.Params.MasterDiameter);
-        if (radius >= LodRadiusThreshold) RenderAsCircles();
-        else RenderAsPixels();
+        // Always pixel-level rasterize (donut model). No vector LOD path —
+        // we want the playground to look like the actual KBGA camera frame.
+        RenderAsPixelImage();
     }
 
     private void RenderBackground()
@@ -141,7 +124,12 @@ public class SimulationCanvas : FrameworkElement
         _lastBackgroundSize = sz;
     }
 
-    private unsafe void RenderAsPixels()
+    /// <summary>
+    /// Pixel-level rasterization simulating a real KBGA camera frame.
+    /// Each blob renders as a donut: bright rim near r·0.75 falling off to background.
+    /// Models the specular highlight pattern of LED-lit spherical solder balls.
+    /// </summary>
+    private unsafe void RenderAsPixelImage()
     {
         if (_frame == null || _transform == null || _layout == null) return;
         int w = (int)ActualWidth;
@@ -155,74 +143,229 @@ public class SimulationCanvas : FrameworkElement
             setupDc.DrawImage(_pixelBitmap, new Rect(0, 0, w, h));
         }
 
-        _pixelBitmap.Lock();
-        var pBack = (byte*)_pixelBitmap.BackBuffer;
-        int stride = _pixelBitmap.BackBufferStride;
-        long bytes = (long)stride * h;
-        // Fast clear via Span — uses vectorized memset internally
-        new Span<byte>(pBack, checked((int)bytes)).Clear();
-
         var p = _frame.Params;
         var blobs = _frame.Blobs;
+        byte bg = p.BackgroundBrightness;
+        uint bgPixel = MakeGrayPixel(bg);
+
+        _pixelBitmap.Lock();
+        byte* pBack = (byte*)_pixelBitmap.BackBuffer;
+        int stride = _pixelBitmap.BackBufferStride;
+        int stridePixels = stride / 4;
+        long pixelCount = (long)stridePixels * h;
+
+        // Uniform background fill (vectorized SIMD memset via Span<uint>.Fill)
+        new Span<uint>(pBack, checked((int)pixelCount)).Fill(bgPixel);
+
         var dataRect = ComputeVisibleDataRect(w, h);
 
         foreach (var (row, col) in _layout.EnumerateVisible(dataRect, p))
         {
             int idx = row * p.Cols + col;
             var blob = blobs[idx];
+            if (!blob.IsPresent) continue;            // Missing pad → just background
+            if (blob.Brightness <= bg) continue;       // No contrast → invisible
 
-            uint color;
-            if (!blob.IsPresent) color = BgraMissing;
-            else if (blob.ShiftX != 0 || blob.ShiftY != 0) color = BgraShift;
-            else color = BgraOk;
-
-            var (px, py) = _transform.DataToScreen(blob.CenterX, blob.CenterY);
-            if ((uint)px >= (uint)w || (uint)py >= (uint)h) continue;
-            *(uint*)(pBack + py * stride + px * 4) = color;
+            DrawBlobDonut(pBack, stridePixels, w, h, blob, bg);
         }
 
         _pixelBitmap.AddDirtyRect(new Int32Rect(0, 0, w, h));
         _pixelBitmap.Unlock();
     }
 
-    private void RenderAsCircles()
+    // Two-layer shape model — both effects stacked, independent harmonics.
+    //
+    // 1) AZIMUTHAL brightness modulation (driven by Acircularity, β):
+    //    Real BGA balls stay geometrically round even when defective. KBGA's
+    //    ACIRCULARITY = P²/(4πA) inflates mainly because UNEVEN RIM REFLECTION
+    //    (ball tilt, apex damage, co-planarity errors) makes some sectors dim,
+    //    drop below the binarization threshold, and disappear — leaving a
+    //    C-shape arc with exploded perimeter.
+    //      factor(θ) = clamp(1 + β · Σ aₖ cos(kθ + φₖ), 0, 1)
+    //      intensity = bg + (donut(d) − bg) · factor(θ)
+    //      β = clamp((acirc − 1.0) · 0.4, 0, 1.0)
+    //
+    // 2) RADIAL geometric deformation (driven by ShapeDeformation, γ):
+    //    Manufacturing tolerance and reflow surface-tension asymmetry give real
+    //    balls a small physical out-of-round component on top of the reflection
+    //    asymmetry — kept small by default (γ≈0.02 = ±2% radial).
+    //      r(θ) = r₀ · (1 + γ · Σ bₖ cos(kθ + ψₖ))
+    //      γ = blob.ShapeDeformation directly (already an amplitude ratio)
+    //
+    // Each blob uses 5 cosine modes (k=2..6) with deterministic per-blob amps
+    // and phases derived from independent hashes of (MasterIndex, k) so radial
+    // and azimuthal asymmetries don't artificially correlate.
+    private const int ShapeHarmonicCount = 5;
+    private const int ShapeHarmonicMinMode = 2; // skip k=0 (DC) and k=1 (translation)
+    private const double PerturbSlope = 0.4;
+    private const double PerturbMax = 1.0;
+    private const double PerturbAcircBaseline = 1.0;
+    private const double RadialFloorRatio = 0.3; // r(θ) ≥ 0.3·r₀ for sanity
+
+    private unsafe void DrawBlobDonut(byte* pBuffer, int stridePixels, int w, int h,
+                                       in SimulatedBlob blob, byte bg)
     {
-        if (_frame == null || _transform == null || _layout == null) return;
-        _pixelBitmap = null;
-        int w = (int)ActualWidth;
-        int h = (int)ActualHeight;
-        var p = _frame.Params;
-        var blobs = _frame.Blobs;
-        var masters = _frame.Masters;
-        var dataRect = ComputeVisibleDataRect(w, h);
+        if (_transform == null || _frame == null) return;
 
-        using var dc = _ballVisual.RenderOpen();
-        foreach (var (row, col) in _layout.EnumerateVisible(dataRect, p))
+        double cx = blob.CenterX;
+        double cy = blob.CenterY;
+        double radiusMm = blob.Diameter / 2.0;
+        double radiusPx = _transform.BallRadiusPixels(blob.Diameter);
+        byte peak = blob.Brightness;
+        int amp = peak - bg;
+        uint* pUint = (uint*)pBuffer;
+
+        double mmPerPx = _frame.Params.MmPerPixel;
+        double invMmPerPx = 1.0 / mmPerPx;
+
+        // Azimuthal (brightness) coefficient β — from acircularity
+        double perturbBeta = (blob.Acircularity - PerturbAcircBaseline) * PerturbSlope;
+        if (perturbBeta < 0) perturbBeta = 0;
+        if (perturbBeta > PerturbMax) perturbBeta = PerturbMax;
+
+        // Radial (geometric) coefficient γ — from shape deformation
+        double perturbGamma = blob.ShapeDeformation;
+        if (perturbGamma < 0) perturbGamma = 0;
+        if (perturbGamma > 0.5) perturbGamma = 0.5;
+
+        // Independent harmonic sets — same index, different hash domains
+        Span<double> azAmps = stackalloc double[ShapeHarmonicCount];
+        Span<double> azPhases = stackalloc double[ShapeHarmonicCount];
+        Span<double> radAmps = stackalloc double[ShapeHarmonicCount];
+        Span<double> radPhases = stackalloc double[ShapeHarmonicCount];
+        if (perturbBeta > 0) BuildHarmonics(blob.MasterIndex, hashOffset: 0, azAmps, azPhases);
+        if (perturbGamma > 0) BuildHarmonics(blob.MasterIndex, hashOffset: 100, radAmps, radPhases);
+        bool needTheta = perturbBeta > 0 || perturbGamma > 0;
+
+        // Sub-pixel ball (zoomed far out): single pixel with donut's area-weighted mean.
+        if (radiusPx < 1.0)
         {
-            int idx = row * p.Cols + col;
-            var master = masters[idx];
-            var blob = blobs[idx];
+            var (px, py) = _transform.DataToScreen(cx, cy);
+            if ((uint)px >= (uint)w || (uint)py >= (uint)h) return;
+            int v = bg + (int)(amp * 0.40);
+            WriteMaxPixel(pUint + py * stridePixels + px, v);
+            return;
+        }
 
-            // Master dot (gray, smaller — peeks out beneath blob)
-            var (mpx, mpy) = _transform.DataToScreen(master.X, master.Y);
-            double masterR = Math.Max(2.0, _transform.BallRadiusPixels(master.Diameter) * 0.55);
-            dc.DrawEllipse(MasterBrush, null, new Point(mpx, mpy), masterR, masterR);
+        // Screen-space bounding box. Radial perturbation can grow the ball
+        // up to (1+γ)·r₀; azimuthal modulation never changes geometry, so
+        // the bbox only depends on γ.
+        double bboxMargin = 1.1 * (1.0 + perturbGamma);
+        var (sxMin0, syMax0) = _transform.DataToScreen(cx - radiusMm * bboxMargin, cy - radiusMm * bboxMargin);
+        var (sxMax0, syMin0) = _transform.DataToScreen(cx + radiusMm * bboxMargin, cy + radiusMm * bboxMargin);
+        int sxMin = Math.Max(0, sxMin0);
+        int sxMax = Math.Min(w - 1, sxMax0);
+        int syMin = Math.Max(0, syMin0);
+        int syMax = Math.Min(h - 1, syMax0);
+        if (sxMax < sxMin || syMax < syMin) return;
 
-            if (!blob.IsPresent)
+        double r = radiusMm;
+        // Conservative outer cull when all radial harmonics align in phase
+        double rMaxFactor = 1.1 * (1.0 + perturbGamma);
+        double rMax2 = r * r * rMaxFactor * rMaxFactor;
+
+        for (int sy = syMin; sy <= syMax; sy++)
+        {
+            uint* rowPtr = pUint + sy * stridePixels;
+            for (int sx = sxMin; sx <= sxMax; sx++)
             {
-                // Missing: hollow cyan ring at master position
-                double r = Math.Max(3.0, _transform.BallRadiusPixels(master.Diameter));
-                dc.DrawEllipse(null, MissingRingPen, new Point(mpx, mpy), r, r);
-            }
-            else
-            {
-                var (px, py) = _transform.DataToScreen(blob.CenterX, blob.CenterY);
-                double r = Math.Max(2.0, _transform.BallRadiusPixels(blob.Diameter));
-                bool isShifted = blob.ShiftX != 0 || blob.ShiftY != 0;
-                dc.DrawEllipse(isShifted ? ShiftBrush : OkBrush, null, new Point(px, py), r, r);
+                var (dx, dy) = _transform.ScreenToData(sx + 0.5, sy + 0.5);
+                // Snap to camera-pixel-grid center
+                double cdx = (Math.Floor(dx * invMmPerPx) + 0.5) * mmPerPx;
+                double cdy = (Math.Floor(dy * invMmPerPx) + 0.5) * mmPerPx;
+                double ddx = cdx - cx;
+                double ddy = cdy - cy;
+                double d2 = ddx * ddx + ddy * ddy;
+                if (d2 > rMax2) continue;
+
+                double theta = 0;
+                if (needTheta) theta = Math.Atan2(ddy, ddx);
+
+                // Layer 1: radial perturbation → local radius
+                double rLocal = r;
+                if (perturbGamma > 0)
+                {
+                    double sumRad = 0;
+                    for (int k = 0; k < ShapeHarmonicCount; k++)
+                        sumRad += radAmps[k] * Math.Cos((k + ShapeHarmonicMinMode) * theta + radPhases[k]);
+                    rLocal = r * (1.0 + perturbGamma * sumRad);
+                    if (rLocal < r * RadialFloorRatio) rLocal = r * RadialFloorRatio;
+                }
+                double rOuter2 = rLocal * rLocal * 1.21;
+                if (d2 > rOuter2) continue;
+
+                double normD = Math.Sqrt(d2) / rLocal;
+                // Donut profile: bright rim at normD = 0.75, halfwidth 0.30
+                double t = 1.0 - Math.Abs(normD - 0.75) / 0.30;
+                if (t <= 0) continue;
+                if (t > 1) t = 1;
+                double smooth = t * t * (3.0 - 2.0 * t);
+                int val = bg + (int)(amp * smooth);
+                if (val <= bg) continue;
+
+                // Layer 2: azimuthal brightness modulation — dims rim sectors.
+                // High-acirc balls develop dark gaps that Stage 2 binarization
+                // will turn into open C-shapes.
+                if (perturbBeta > 0)
+                {
+                    double sumAz = 0;
+                    for (int k = 0; k < ShapeHarmonicCount; k++)
+                        sumAz += azAmps[k] * Math.Cos((k + ShapeHarmonicMinMode) * theta + azPhases[k]);
+                    double factor = 1.0 + perturbBeta * sumAz;
+                    if (factor <= 0) continue;
+                    if (factor > 1) factor = 1;
+                    val = bg + (int)((val - bg) * factor);
+                    if (val <= bg) continue;
+                }
+
+                WriteMaxPixel(rowPtr + sx, val);
             }
         }
     }
+
+    /// <summary>Populate harmonic amp/phase arrays from deterministic per-blob
+    /// hashes; normalize amps so their sum is 1 (keeps perturbation amplitude
+    /// bounded regardless of mode count).</summary>
+    private static void BuildHarmonics(int blobIndex, int hashOffset,
+                                       Span<double> amps, Span<double> phases)
+    {
+        double sum = 0;
+        for (int k = 0; k < amps.Length; k++)
+        {
+            amps[k] = Hash01(blobIndex, hashOffset + k * 2);
+            phases[k] = Hash01(blobIndex, hashOffset + k * 2 + 1) * (2 * Math.PI);
+            sum += amps[k];
+        }
+        if (sum > 1e-9)
+        {
+            double inv = 1.0 / sum;
+            for (int k = 0; k < amps.Length; k++) amps[k] *= inv;
+        }
+    }
+
+    /// <summary>Stateless deterministic 0..1 hash from (idx, k). Used to pick
+    /// per-blob harmonic amplitudes/phases without bloating SimulatedBlob.</summary>
+    private static double Hash01(int idx, int k)
+    {
+        uint h = (uint)idx * 2654435761u ^ (uint)k * 0x9E3779B9u;
+        h ^= h >> 16;
+        h *= 0x85EBCA6Bu;
+        h ^= h >> 13;
+        return (h & 0xFFFFFFu) / (double)0x1000000u;
+    }
+
+    private static unsafe void WriteMaxPixel(uint* pixel, int newVal)
+    {
+        if (newVal <= 0) return;
+        if (newVal > 255) newVal = 255;
+        uint existing = *pixel;
+        byte existingV = (byte)(existing & 0xFF);
+        if (newVal > existingV)
+            *pixel = MakeGrayPixel((byte)newVal);
+    }
+
+    private static uint MakeGrayPixel(byte v)
+        => 0xFF000000u | ((uint)v << 16) | ((uint)v << 8) | v;
 
     private Rect ComputeVisibleDataRect(int w, int h)
     {
@@ -251,34 +394,52 @@ public class SimulationCanvas : FrameworkElement
         RenderAll();
     }
 
+    private void OnMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        StartPan(e.GetPosition(this));
+    }
+
+    private void OnMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        EndPan();
+    }
+
     private void OnMouseDown(object sender, MouseButtonEventArgs e)
     {
         if (e.ChangedButton == MouseButton.Middle)
-        {
-            _isMiddleDragging = true;
-            _lastMousePos = e.GetPosition(this);
-            CaptureMouse();
-            Focus();
-        }
+            StartPan(e.GetPosition(this));
     }
 
     private void OnMouseUp(object sender, MouseButtonEventArgs e)
     {
         if (e.ChangedButton == MouseButton.Middle)
-        {
-            _isMiddleDragging = false;
-            ReleaseMouseCapture();
-        }
+            EndPan();
     }
 
     private void OnMouseMove(object sender, MouseEventArgs e)
     {
-        if (!_isMiddleDragging || _transform == null) return;
+        if (!_isPanning || _transform == null) return;
         var pos = e.GetPosition(this);
         _transform.PanX += pos.X - _lastMousePos.X;
         _transform.PanY += pos.Y - _lastMousePos.Y;
         _lastMousePos = pos;
         _pixelBitmap = null;
         RenderAll();
+    }
+
+    private void StartPan(Point pos)
+    {
+        _isPanning = true;
+        _lastMousePos = pos;
+        CaptureMouse();
+        Focus();
+        Cursor = System.Windows.Input.Cursors.SizeAll;
+    }
+
+    private void EndPan()
+    {
+        _isPanning = false;
+        ReleaseMouseCapture();
+        Cursor = System.Windows.Input.Cursors.Hand;
     }
 }

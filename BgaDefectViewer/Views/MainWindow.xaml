@@ -3,6 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="clr-namespace:BgaDefectViewer.ViewModels"
         xmlns:views="clr-namespace:BgaDefectViewer.Views"
+        xmlns:simviews="clr-namespace:BgaDefectViewer.Simulation.Views"
         Title="BGA Defect Viewer" Width="1280" Height="800"
         WindowStartupLocation="CenterScreen">
     <Window.DataContext>
@@ -76,6 +77,9 @@
             </TabItem>
             <TabItem Header="Overlap Inspection">
                 <views:OverlapInspectionView DataContext="{Binding OverlapInspection}"/>
+            </TabItem>
+            <TabItem Header="Simulator">
+                <simviews:SimulatorView DataContext="{Binding Simulator}"/>
             </TabItem>
         </TabControl>
     </DockPanel>

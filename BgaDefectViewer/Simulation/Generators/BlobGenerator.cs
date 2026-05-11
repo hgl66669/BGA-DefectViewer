@@ -54,8 +54,14 @@ public static class BlobGenerator
                 double diameter = Distributions.NextGaussianClamped(rng,
                     p.BlobDiameterMean, p.BlobDiameterStdDev,
                     p.BlobDiameterMean * 0.5, p.BlobDiameterMean * 1.5);
+                // KBGA's ACIRCULARITY = raw P²/(4πA), 1.0 = circle. Real
+                // detected balls cluster around 1.1–1.3 due to pixel-rasterization
+                // noise on perimeter measurement. KBGA recipe OK range: 0.7–3.0.
                 double acircularity = Distributions.NextGaussianClamped(rng,
-                    p.BlobAcircularityMean, p.BlobAcircularityStdDev, 0.7, 3.0);
+                    p.BlobAcircularityMean, p.BlobAcircularityStdDev, 0.5, 5.0);
+                // Radial geometric deformation γ (independent of acircularity).
+                double shapeDeform = Distributions.NextGaussianClamped(rng,
+                    p.BlobShapeDeformationMean, p.BlobShapeDeformationStdDev, 0.0, 0.5);
                 double score = Distributions.NextGaussianClamped(rng,
                     p.BlobScoreMean, p.BlobScoreStdDev, 0.0, 1.0);
                 byte brightness = (byte)Math.Clamp(
@@ -63,13 +69,12 @@ public static class BlobGenerator
                         p.BlobBrightnessMean, p.BlobBrightnessStdDev, 0, 255),
                     0, 255);
 
-                // Pixel-domain derivations via calibration
+                // Pixel-domain derivations via calibration. With KBGA's raw
+                // P²/(4πA) acircularity (1.0 = circle) and area ≈ π r² conserved,
+                //   acircularity = P²/(4πA)   ⇒   P = 2π r · √(acircularity)
                 double radiusPx = (diameter / 2.0) / Math.Max(1e-9, p.MmPerPixel);
-                double idealArea = Math.PI * radiusPx * radiusPx;
-                double idealPerimeter = 2 * Math.PI * radiusPx;
-                // Acircularity ≈ (P^2)/(4πA); recover area from acircularity
-                double area = idealArea / Math.Max(1e-9, acircularity);
-                double perimeter = idealPerimeter * Math.Sqrt(Math.Max(1.0, acircularity));
+                double area = Math.PI * radiusPx * radiusPx;
+                double perimeter = 2 * Math.PI * radiusPx * Math.Sqrt(Math.Max(1.0, acircularity));
 
                 double shiftX = 0, shiftY = 0;
                 double cx = master.X, cy = master.Y;
@@ -90,6 +95,7 @@ public static class BlobGenerator
                     CenterY = cy,
                     Diameter = diameter,
                     Acircularity = acircularity,
+                    ShapeDeformation = shapeDeform,
                     Score = score,
                     Area = area,
                     Perimeter = perimeter,

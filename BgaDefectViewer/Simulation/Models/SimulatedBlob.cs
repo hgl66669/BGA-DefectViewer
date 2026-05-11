@@ -6,7 +6,8 @@ public struct SimulatedBlob
     public double CenterX;
     public double CenterY;
     public double Diameter;
-    public double Acircularity;
+    public double Acircularity;        // Drives azimuthal brightness modulation (β)
+    public double ShapeDeformation;    // Drives radial geometric perturbation (γ); 0 = perfect circle
     public double Score;
     public double Area;
     public double Perimeter;

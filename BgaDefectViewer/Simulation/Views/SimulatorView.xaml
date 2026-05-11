@@ -1,0 +1,260 @@
+<UserControl x:Class="BgaDefectViewer.Simulation.Views.SimulatorView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:sim="clr-namespace:BgaDefectViewer.Simulation.Controls"
+             xmlns:simvm="clr-namespace:BgaDefectViewer.Simulation.ViewModels"
+             d:DataContext="{d:DesignInstance Type=simvm:SimulatorViewModel}"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             mc:Ignorable="d">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <Style TargetType="GroupBox">
+            <Setter Property="Margin" Value="4"/>
+            <Setter Property="Padding" Value="4"/>
+        </Style>
+        <Style x:Key="LabelStyle" TargetType="TextBlock">
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="Margin" Value="2,2,6,2"/>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="Margin" Value="2"/>
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+        </Style>
+    </UserControl.Resources>
+    <Grid>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="380"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- Left: parameter panel -->
+        <ScrollViewer Grid.Column="0" VerticalScrollBarVisibility="Auto">
+            <StackPanel Margin="4">
+
+                <GroupBox Header="Grid">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/>
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource LabelStyle}" Text="Layout:"/>
+                        <ComboBox Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="3" Margin="2"
+                                  ItemsSource="{Binding Layouts}"
+                                  SelectedItem="{Binding SelectedLayout}"
+                                  DisplayMemberPath="DisplayName"/>
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource LabelStyle}" Text="Rows:"/>
+                        <TextBox   Grid.Row="1" Grid.Column="1" Text="{Binding Rows, UpdateSourceTrigger=LostFocus}"/>
+                        <TextBlock Grid.Row="1" Grid.Column="2" Style="{StaticResource LabelStyle}" Text="Cols:"/>
+                        <TextBox   Grid.Row="1" Grid.Column="3" Text="{Binding Cols, UpdateSourceTrigger=LostFocus}"/>
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource LabelStyle}" Text="PitchX (mm):"/>
+                        <TextBox   Grid.Row="2" Grid.Column="1" Text="{Binding PitchX, StringFormat=F4, UpdateSourceTrigger=LostFocus}"/>
+                        <TextBlock Grid.Row="2" Grid.Column="2" Style="{StaticResource LabelStyle}" Text="PitchY (mm):"/>
+                        <TextBox   Grid.Row="2" Grid.Column="3" Text="{Binding PitchY, StringFormat=F4, UpdateSourceTrigger=LostFocus}"/>
+
+                        <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource LabelStyle}" Text="Stagger Off X:"/>
+                        <TextBox   Grid.Row="3" Grid.Column="1" Text="{Binding StaggerOffsetX, StringFormat=F4, UpdateSourceTrigger=LostFocus}"/>
+                        <TextBlock Grid.Row="3" Grid.Column="2" Style="{StaticResource LabelStyle}" Text="Total:"/>
+                        <TextBlock Grid.Row="3" Grid.Column="3" Style="{StaticResource LabelStyle}"
+                                   Text="{Binding TotalPadsText}" FontWeight="Bold"/>
+
+                        <TextBlock Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="4"
+                                   Style="{StaticResource LabelStyle}" FontStyle="Italic" Foreground="#777"
+                                   Text="{Binding AutoRegenerateHint}" TextWrapping="Wrap"/>
+                    </Grid>
+                </GroupBox>
+
+                <GroupBox Header="Master">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Grid.Column="0" Style="{StaticResource LabelStyle}" Text="Diameter (mm):"/>
+                        <TextBox   Grid.Column="1" Text="{Binding MasterDiameter, StringFormat=F4, UpdateSourceTrigger=LostFocus}"/>
+                        <TextBlock Grid.Column="2" Style="{StaticResource LabelStyle}" Text="± StdDev:"/>
+                        <TextBox   Grid.Column="3" Text="{Binding MasterDiameterStdDev, StringFormat=F4, UpdateSourceTrigger=LostFocus}"/>
+                    </Grid>
+                </GroupBox>
+
+                <GroupBox Header="Blob (per KBGA recipe params)">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/>
+                        </Grid.RowDefinitions>
+
+                        <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource LabelStyle}" Text="Diameter mean:"/>
+                        <TextBox   Grid.Row="0" Grid.Column="1" Text="{Binding BlobDiameterMean, StringFormat=F4, UpdateSourceTrigger=LostFocus}"/>
+                        <TextBlock Grid.Row="0" Grid.Column="2" Style="{StaticResource LabelStyle}" Text="± StdDev:"/>
+                        <TextBox   Grid.Row="0" Grid.Column="3" Text="{Binding BlobDiameterStdDev, StringFormat=F4, UpdateSourceTrigger=LostFocus}"/>
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource LabelStyle}" Text="Acirc. mean:"
+                                   ToolTip="P²/(4πA), 1.0=circle. Drives uneven-rim brightness."/>
+                        <TextBox   Grid.Row="1" Grid.Column="1" Text="{Binding BlobAcircularityMean, StringFormat=F3, UpdateSourceTrigger=LostFocus}"/>
+                        <TextBlock Grid.Row="1" Grid.Column="2" Style="{StaticResource LabelStyle}" Text="± StdDev:"/>
+                        <TextBox   Grid.Row="1" Grid.Column="3" Text="{Binding BlobAcircularityStdDev, StringFormat=F3, UpdateSourceTrigger=LostFocus}"/>
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource LabelStyle}" Text="Shape deform:"
+                                   ToolTip="Radial geometric perturbation γ. 0=perfect circle, 0.02=typical."/>
+                        <TextBox   Grid.Row="2" Grid.Column="1" Text="{Binding BlobShapeDeformationMean, StringFormat=F3, UpdateSourceTrigger=LostFocus}"/>
+                        <TextBlock Grid.Row="2" Grid.Column="2" Style="{StaticResource LabelStyle}" Text="± StdDev:"/>
+                        <TextBox   Grid.Row="2" Grid.Column="3" Text="{Binding BlobShapeDeformationStdDev, StringFormat=F3, UpdateSourceTrigger=LostFocus}"/>
+
+                        <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource LabelStyle}" Text="Score mean:"/>
+                        <TextBox   Grid.Row="3" Grid.Column="1" Text="{Binding BlobScoreMean, StringFormat=F3, UpdateSourceTrigger=LostFocus}"/>
+                        <TextBlock Grid.Row="3" Grid.Column="2" Style="{StaticResource LabelStyle}" Text="± StdDev:"/>
+                        <TextBox   Grid.Row="3" Grid.Column="3" Text="{Binding BlobScoreStdDev, StringFormat=F3, UpdateSourceTrigger=LostFocus}"/>
+
+                        <TextBlock Grid.Row="4" Grid.Column="0" Style="{StaticResource LabelStyle}" Text="Brightness mean:"/>
+                        <TextBox   Grid.Row="4" Grid.Column="1" Text="{Binding BlobBrightnessMean, UpdateSourceTrigger=LostFocus}"/>
+                        <TextBlock Grid.Row="4" Grid.Column="2" Style="{StaticResource LabelStyle}" Text="± StdDev:"/>
+                        <TextBox   Grid.Row="4" Grid.Column="3" Text="{Binding BlobBrightnessStdDev, UpdateSourceTrigger=LostFocus}"/>
+
+                        <TextBlock Grid.Row="5" Grid.Column="0" Style="{StaticResource LabelStyle}" Text="Background (0-255):"/>
+                        <TextBox   Grid.Row="5" Grid.Column="1" Text="{Binding BackgroundBrightness, UpdateSourceTrigger=LostFocus}"/>
+                        <TextBlock Grid.Row="5" Grid.Column="2" Style="{StaticResource LabelStyle}" Text="mm/pixel:"/>
+                        <TextBox   Grid.Row="5" Grid.Column="3" Text="{Binding MmPerPixel, StringFormat=F5, UpdateSourceTrigger=LostFocus}"/>
+                    </Grid>
+                </GroupBox>
+
+                <GroupBox Header="Mode">
+                    <StackPanel>
+                        <RadioButton GroupName="Mode" Content="1. All pads have blob"
+                                     IsChecked="{Binding IsAllPresent}" Margin="2"/>
+                        <RadioButton GroupName="Mode" Content="2. Random offset"
+                                     IsChecked="{Binding IsRandomOffset}" Margin="2"/>
+                        <RadioButton GroupName="Mode" Content="3. Random missing"
+                                     IsChecked="{Binding IsRandomMissing}" Margin="2"/>
+                    </StackPanel>
+                </GroupBox>
+
+                <GroupBox Header="Random Offset Settings"
+                          Visibility="{Binding IsRandomOffset, Converter={StaticResource BoolToVis}}">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <RadioButton GroupName="OffsetQty" Content="Probability"
+                                         IsChecked="{Binding OffsetUseProbability}" Margin="2,2,8,2"/>
+                            <RadioButton GroupName="OffsetQty" Content="Absolute count"
+                                         IsChecked="{Binding OffsetUseCount}" Margin="2"/>
+                        </StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/>
+                            </Grid.RowDefinitions>
+                            <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource LabelStyle}" Text="Probability (0-1):"
+                                       Visibility="{Binding OffsetUseProbability, Converter={StaticResource BoolToVis}}"/>
+                            <TextBox   Grid.Row="0" Grid.Column="1" Text="{Binding OffsetProbability, StringFormat=F4, UpdateSourceTrigger=LostFocus}"
+                                       Visibility="{Binding OffsetUseProbability, Converter={StaticResource BoolToVis}}"/>
+                            <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource LabelStyle}" Text="Count:"
+                                       Visibility="{Binding OffsetUseCount, Converter={StaticResource BoolToVis}}"/>
+                            <TextBox   Grid.Row="1" Grid.Column="1" Text="{Binding OffsetCount, UpdateSourceTrigger=LostFocus}"
+                                       Visibility="{Binding OffsetUseCount, Converter={StaticResource BoolToVis}}"/>
+                            <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource LabelStyle}" Text="Min (mm):"/>
+                            <TextBox   Grid.Row="2" Grid.Column="1" Text="{Binding OffsetMinMm, StringFormat=F4, UpdateSourceTrigger=LostFocus}"/>
+                            <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource LabelStyle}" Text="Max (mm):"/>
+                            <TextBox   Grid.Row="3" Grid.Column="1" Text="{Binding OffsetMaxMm, StringFormat=F4, UpdateSourceTrigger=LostFocus}"/>
+                        </Grid>
+                    </StackPanel>
+                </GroupBox>
+
+                <GroupBox Header="Random Missing Settings"
+                          Visibility="{Binding IsRandomMissing, Converter={StaticResource BoolToVis}}">
+                    <StackPanel>
+                        <StackPanel Orientation="Horizontal">
+                            <RadioButton GroupName="MissingQty" Content="Probability"
+                                         IsChecked="{Binding MissingUseProbability}" Margin="2,2,8,2"/>
+                            <RadioButton GroupName="MissingQty" Content="Absolute count"
+                                         IsChecked="{Binding MissingUseCount}" Margin="2"/>
+                        </StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition/><RowDefinition/>
+                            </Grid.RowDefinitions>
+                            <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource LabelStyle}" Text="Probability (0-1):"
+                                       Visibility="{Binding MissingUseProbability, Converter={StaticResource BoolToVis}}"/>
+                            <TextBox   Grid.Row="0" Grid.Column="1" Text="{Binding MissingProbability, StringFormat=F4, UpdateSourceTrigger=LostFocus}"
+                                       Visibility="{Binding MissingUseProbability, Converter={StaticResource BoolToVis}}"/>
+                            <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource LabelStyle}" Text="Count:"
+                                       Visibility="{Binding MissingUseCount, Converter={StaticResource BoolToVis}}"/>
+                            <TextBox   Grid.Row="1" Grid.Column="1" Text="{Binding MissingCount, UpdateSourceTrigger=LostFocus}"
+                                       Visibility="{Binding MissingUseCount, Converter={StaticResource BoolToVis}}"/>
+                        </Grid>
+                    </StackPanel>
+                </GroupBox>
+
+                <GroupBox Header="Reproducibility &amp; Actions">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Style="{StaticResource LabelStyle}" Text="Seed:"/>
+                            <TextBox   Grid.Column="1" Text="{Binding Seed, UpdateSourceTrigger=LostFocus}"/>
+                        </Grid>
+                        <UniformGrid Columns="2" Margin="0,4,0,0">
+                            <Button Content="Generate"  Command="{Binding GenerateCommand}"  Margin="2" Padding="4"/>
+                            <Button Content="Reset View" Command="{Binding ResetViewCommand}" Margin="2" Padding="4"/>
+                        </UniformGrid>
+                    </StackPanel>
+                </GroupBox>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- Right: canvas + status overlay -->
+        <Grid Grid.Column="1">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <Border Grid.Row="0" BorderBrush="#333" BorderThickness="1" Margin="2">
+                <Grid>
+                    <sim:SimulationCanvas x:Name="Canvas"/>
+                    <!-- Calibration / mode info overlay -->
+                    <Border HorizontalAlignment="Right" VerticalAlignment="Top"
+                            Margin="8" Padding="6" CornerRadius="3"
+                            Background="#88000000" BorderBrush="#444" BorderThickness="1">
+                        <StackPanel>
+                            <TextBlock Foreground="#CCC" FontFamily="Consolas" FontSize="11"
+                                       Text="Camera-style render (8-bit gray)"/>
+                            <TextBlock Foreground="#CCC" FontFamily="Consolas" FontSize="11">
+                                <Run Text="{Binding MmPerPixel, StringFormat='Cal: {0:F5} mm/px'}"/>
+                            </TextBlock>
+                            <TextBlock Foreground="#AAA" FontFamily="Consolas" FontSize="10"
+                                       Text="(wheel = zoom · drag = pan)"/>
+                        </StackPanel>
+                    </Border>
+                </Grid>
+            </Border>
+
+            <StatusBar Grid.Row="1">
+                <TextBlock Text="{Binding StatusText}"/>
+            </StatusBar>
+        </Grid>
+    </Grid>
+</UserControl>

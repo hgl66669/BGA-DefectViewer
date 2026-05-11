@@ -5,6 +5,7 @@ using System.Windows.Input;
 using BgaDefectViewer.Helpers;
 using BgaDefectViewer.Models;
 using BgaDefectViewer.Parsers;
+using BgaDefectViewer.Simulation.ViewModels;
 
 namespace BgaDefectViewer.ViewModels;
 
@@ -117,6 +118,7 @@ public class MainViewModel : ViewModelBase
     public DefectMapViewModel DefectMap { get; }
     public RecurringDefectViewModel RecurringDefect { get; }
     public OverlapInspectionViewModel OverlapInspection { get; }
+    public SimulatorViewModel Simulator { get; }
 
     public ICommand BrowsePathCommand { get; }
     public ICommand ReloadLotCommand { get; }
@@ -132,6 +134,7 @@ public class MainViewModel : ViewModelBase
         DefectMap = new DefectMapViewModel();
         RecurringDefect = new RecurringDefectViewModel();
         OverlapInspection = new OverlapInspectionViewModel();
+        Simulator = new SimulatorViewModel();
 
         BrowsePathCommand = new RelayCommand(BrowsePath);
         ReloadLotCommand = new RelayCommand(
