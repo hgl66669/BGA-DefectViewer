@@ -4,6 +4,7 @@
              xmlns:conv="clr-namespace:BgaDefectViewer.Converters">
     <UserControl.Resources>
         <conv:JudgeToRowColorConverter x:Key="JudgeToRowColorConv"/>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
     </UserControl.Resources>
     <DockPanel>
         <!-- Header -->
@@ -12,10 +13,16 @@
             <TextBlock Text="{Binding LotName}" FontSize="14" FontWeight="Bold"/>
             <TextBlock Text="    SubstratesCount: " Margin="20,0,0,0" FontSize="14"/>
             <TextBlock Text="{Binding SubstrateCount}" FontSize="14"/>
+            <TextBlock Text="    DieCount: " Margin="12,0,0,0" FontSize="14"
+                       ToolTip="所有 Die 數 = SubstrateCount × DIE/Sub"/>
+            <TextBlock Text="{Binding TotalDieCount}" FontSize="14"/>
+            <Button Content="合併批號" Command="{Binding MergeLotsCommand}"
+                    Margin="24,0,0,0" Padding="10,2" VerticalAlignment="Center"
+                    ToolTip="從現有 Lot# 清單合併出一個臨時批號（僅本次 session 有效，不修改檔案）"/>
         </StackPanel>
 
         <!-- LOT Summary (bottom) -->
-        <GroupBox DockPanel.Dock="Bottom" Margin="4" MaxHeight="200">
+        <GroupBox DockPanel.Dock="Bottom" Margin="4" MaxHeight="360">
             <GroupBox.Header>
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                     <!-- Indicator: Green = original CSV, Amber = app-calculated -->
@@ -46,31 +53,122 @@
                     </TextBlock>
                 </StackPanel>
             </GroupBox.Header>
-            <DataGrid ItemsSource="{Binding LotSummaryRows}"
-                      AutoGenerateColumns="False" IsReadOnly="True"
-                      CanUserAddRows="False" HeadersVisibility="Column"
-                      GridLinesVisibility="All" FontSize="12"
-                      VerticalScrollBarVisibility="Auto">
-                <DataGrid.Columns>
-                    <DataGridTextColumn Header="" Binding="{Binding Label}" Width="100" FontWeight="Bold"/>
-                    <DataGridTextColumn Header="OK" Binding="{Binding OK}" Width="65"/>
-                    <DataGridTextColumn Header="Miss" Binding="{Binding Miss}" Width="55"/>
-                    <DataGridTextColumn Header="Shift" Binding="{Binding Shift}" Width="55"/>
-                    <DataGridTextColumn Header="SD" Binding="{Binding SD}" Width="45"/>
-                    <DataGridTextColumn Header="LD" Binding="{Binding LD}" Width="45"/>
-                    <DataGridTextColumn Header="ETC" Binding="{Binding ETC}" Width="55"/>
-                    <DataGridTextColumn Header="Bridge" Binding="{Binding Bridge}" Width="55"/>
-                    <DataGridTextColumn Header="Extra" Binding="{Binding Extra}" Width="55"/>
-                    <DataGridTextColumn Header="E.O." Binding="{Binding EO}" Width="50"/>
-                    <DataGridTextColumn Header="NGDie" Binding="{Binding NGDie}" Width="55"/>
-                    <DataGridTextColumn Header="GDie" Binding="{Binding GDie}" Width="50"/>
-                    <DataGridTextColumn Header="PPM" Binding="{Binding PPM}" Width="65"/>
-                    <DataGridTextColumn Header="Judge" Binding="{Binding Judge}" Width="55"/>
-                    <DataGridTextColumn Header="Stage" Binding="{Binding Stage}" Width="55"/>
-                    <DataGridTextColumn Header="Yield[%]" Binding="{Binding YieldPercent}" Width="75"/>
-                    <DataGridTextColumn Header="Date / Time" Binding="{Binding DateTime}" Width="160"/>
-                </DataGrid.Columns>
-            </DataGrid>
+            <Grid>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                </Grid.RowDefinitions>
+
+                <!-- Row 0: Toolbar -->
+                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="2,0,2,6">
+                    <CheckBox Content="最新 N 片"
+                              IsChecked="{Binding TopNEnabled}"
+                              VerticalAlignment="Center"/>
+                    <TextBox Width="50" Margin="6,0,4,0"
+                             Text="{Binding TopN, UpdateSourceTrigger=PropertyChanged}"
+                             IsEnabled="{Binding TopNEnabled}"
+                             VerticalAlignment="Center"/>
+                    <TextBlock Text="{Binding TopNWarning}"
+                               Foreground="#E67E22" FontStyle="Italic"
+                               VerticalAlignment="Center" Margin="2,0,12,0"/>
+
+                    <TextBlock Text="Yield 模式:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                    <ComboBox Width="100"
+                              ItemsSource="{Binding YieldModes}"
+                              SelectedItem="{Binding YieldMode}"
+                              VerticalAlignment="Center"/>
+
+                    <CheckBox Content="CountETC?"
+                              IsChecked="{Binding CountETC}"
+                              Margin="14,0,0,0" VerticalAlignment="Center"
+                              ToolTip="勾選 = 把 ETC 類視為缺陷計入良率分母；&#x0a;取消 = 將「只有 ETC 類缺陷」的基板視為良品（NGDie 計入 GDie）。&#x0a;ETC 類 = ETC / E.O. / LD / SD / Bridge。&#x0a;若批次內無 ETC 類缺陷造成 NG die，勾選與否結果相同。"/>
+
+                    <TextBlock Text="DIE/Sub:" Margin="16,0,4,0" VerticalAlignment="Center"/>
+                    <TextBox Width="60" VerticalAlignment="Center"
+                             Text="{Binding DieBaseDieCount, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="預設自動偵測；手動輸入後覆寫"/>
+                    <TextBlock Margin="6,0,0,0" VerticalAlignment="Center" Foreground="Gray">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Text" Value="{Binding DieBaseDieCountAuto, StringFormat=(auto: {0})}"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding DieBaseHasAutoValue}" Value="False">
+                                        <Setter Property="Text" Value="(請手動輸入)"/>
+                                        <Setter Property="Foreground" Value="#C62828"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </StackPanel>
+
+                <!-- Row 1: Top-N summary (visible only when TopNEnabled) -->
+                <DockPanel Grid.Row="1" LastChildFill="True" Margin="0,0,0,4"
+                           Visibility="{Binding IsTopNVisible, Converter={StaticResource BoolToVis}}">
+                    <TextBlock DockPanel.Dock="Top" Text="最新 N 片"
+                               FontWeight="Bold" Margin="2,0,2,2"/>
+                    <DataGrid ItemsSource="{Binding TopNSummaryRows}"
+                              AutoGenerateColumns="False" IsReadOnly="True"
+                              CanUserAddRows="False" HeadersVisibility="Column"
+                              GridLinesVisibility="All" FontSize="12"
+                              MaxHeight="130"
+                              VerticalScrollBarVisibility="Auto">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="" Binding="{Binding Label}" Width="100" FontWeight="Bold"/>
+                            <DataGridTextColumn Header="OK" Binding="{Binding OK}" Width="65"/>
+                            <DataGridTextColumn Header="Miss" Binding="{Binding Miss}" Width="55"/>
+                            <DataGridTextColumn Header="Shift" Binding="{Binding Shift}" Width="55"/>
+                            <DataGridTextColumn Header="SD" Binding="{Binding SD}" Width="45"/>
+                            <DataGridTextColumn Header="LD" Binding="{Binding LD}" Width="45"/>
+                            <DataGridTextColumn Header="ETC" Binding="{Binding ETC}" Width="55"/>
+                            <DataGridTextColumn Header="Bridge" Binding="{Binding Bridge}" Width="55"/>
+                            <DataGridTextColumn Header="Extra" Binding="{Binding Extra}" Width="55"/>
+                            <DataGridTextColumn Header="E.O." Binding="{Binding EO}" Width="50"/>
+                            <DataGridTextColumn Header="NGDie" Binding="{Binding NGDie}" Width="55"/>
+                            <DataGridTextColumn Header="GDie" Binding="{Binding GDie}" Width="50"/>
+                            <DataGridTextColumn Header="PPM" Binding="{Binding PPM}" Width="65"/>
+                            <DataGridTextColumn Header="Judge" Binding="{Binding Judge}" Width="55"/>
+                            <DataGridTextColumn Header="Stage" Binding="{Binding Stage}" Width="55"/>
+                            <DataGridTextColumn Header="Yield[%]" Binding="{Binding YieldPercent}" Width="75"/>
+                            <DataGridTextColumn Header="Date / Time" Binding="{Binding DateTime}" Width="160"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+
+                <!-- Row 2: Full-lot summary (always visible) -->
+                <DockPanel Grid.Row="2" LastChildFill="True">
+                    <TextBlock DockPanel.Dock="Top" Text="整批"
+                               FontWeight="Bold" Margin="2,0,2,2"
+                               Visibility="{Binding IsTopNVisible, Converter={StaticResource BoolToVis}}"/>
+                    <DataGrid ItemsSource="{Binding LotSummaryRows}"
+                              AutoGenerateColumns="False" IsReadOnly="True"
+                              CanUserAddRows="False" HeadersVisibility="Column"
+                              GridLinesVisibility="All" FontSize="12"
+                              MaxHeight="160"
+                              VerticalScrollBarVisibility="Auto">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="" Binding="{Binding Label}" Width="100" FontWeight="Bold"/>
+                            <DataGridTextColumn Header="OK" Binding="{Binding OK}" Width="65"/>
+                            <DataGridTextColumn Header="Miss" Binding="{Binding Miss}" Width="55"/>
+                            <DataGridTextColumn Header="Shift" Binding="{Binding Shift}" Width="55"/>
+                            <DataGridTextColumn Header="SD" Binding="{Binding SD}" Width="45"/>
+                            <DataGridTextColumn Header="LD" Binding="{Binding LD}" Width="45"/>
+                            <DataGridTextColumn Header="ETC" Binding="{Binding ETC}" Width="55"/>
+                            <DataGridTextColumn Header="Bridge" Binding="{Binding Bridge}" Width="55"/>
+                            <DataGridTextColumn Header="Extra" Binding="{Binding Extra}" Width="55"/>
+                            <DataGridTextColumn Header="E.O." Binding="{Binding EO}" Width="50"/>
+                            <DataGridTextColumn Header="NGDie" Binding="{Binding NGDie}" Width="55"/>
+                            <DataGridTextColumn Header="GDie" Binding="{Binding GDie}" Width="50"/>
+                            <DataGridTextColumn Header="PPM" Binding="{Binding PPM}" Width="65"/>
+                            <DataGridTextColumn Header="Judge" Binding="{Binding Judge}" Width="55"/>
+                            <DataGridTextColumn Header="Stage" Binding="{Binding Stage}" Width="55"/>
+                            <DataGridTextColumn Header="Yield[%]" Binding="{Binding YieldPercent}" Width="75"/>
+                            <DataGridTextColumn Header="Date / Time" Binding="{Binding DateTime}" Width="160"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+                </DockPanel>
+            </Grid>
         </GroupBox>
 
         <!-- Main DataGrid (center) -->
