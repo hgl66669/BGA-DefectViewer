@@ -25,6 +25,12 @@ public static class FileLocator
     /// <summary>Filename of the Part-level rolling summary (dotfile, new format).</summary>
     public const string RollingSummaryName = ".summary.csv";
 
+    // ── Session-only merged lot constants ───────────────────────────
+    /// <summary>Internal Lot id prefix for a session-only merged virtual lot.</summary>
+    public const string MergedLotPrefix = "__merged__";
+    /// <summary>UI display prefix for a merged lot.</summary>
+    public const string MergedLotDisplayPrefix = "合併 ";
+
     /// <summary>Open a file shared with concurrent writers (handles `.~lock` situations).</summary>
     public static FileStream OpenSharedRead(string path) =>
         new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
@@ -176,6 +182,14 @@ public static class FileLocator
     public static FileCheckResult FindSummaryCsv(string athSysPath, string partNo, string lotNo)
     {
         var result = new FileCheckResult { Label = "Summary" };
+
+        // Session-only merged lots have no physical summary file.
+        if (TryDecodeMergedLot(lotNo, out _))
+        {
+            result.ExpectedPath = "(merged lot, in-memory)";
+            return result;
+        }
+
         var partDir = GetPartResultsDir(athSysPath, partNo);
 
         // New format (virtual day lot OR new real lot from timestamp folders):
@@ -263,6 +277,14 @@ public static class FileLocator
     public static FileCheckResult FindAfaFile(string athSysPath, string partNo, string lotNo, string substrateId)
     {
         var result = new FileCheckResult { Label = "AFA" };
+
+        // Session-only merged lots have no physical AFA file (they reference rows from
+        // other lots, but the merged lot itself owns no folder).
+        if (TryDecodeMergedLot(lotNo, out _))
+        {
+            result.ExpectedPath = "(merged lot, in-memory)";
+            return result;
+        }
 
         // New-format flow: substrateId is "{14-digit TS}-{Sub}", look inside that timestamp folder.
         var match = TryFindAfaInTimestampFolder(athSysPath, partNo, lotNo, substrateId);
@@ -463,11 +485,27 @@ public static class FileLocator
         return DateTime.TryParseExact(s, "yyyyMMdd", CultureInfo.InvariantCulture, DateTimeStyles.None, out date);
     }
 
-    /// <summary>UI display name for a lot id (decodes virtual day lots).</summary>
-    public static string FormatLotForDisplay(string lot) =>
-        TryDecodeVirtualDayLot(lot, out var d)
-            ? d.ToString("yyyy-MM-dd") + VirtualDayLotDisplaySuffix
-            : lot;
+    /// <summary>Encode a session-only merged-lot id with the given timestamp (typically DateTime.Now).</summary>
+    public static string EncodeMergedLot(DateTime timestamp) =>
+        MergedLotPrefix + timestamp.ToString("yyyyMMddHHmmss", CultureInfo.InvariantCulture);
+
+    public static bool TryDecodeMergedLot(string lot, out DateTime timestamp)
+    {
+        timestamp = default;
+        if (string.IsNullOrEmpty(lot) || !lot.StartsWith(MergedLotPrefix, StringComparison.Ordinal)) return false;
+        var s = lot.Substring(MergedLotPrefix.Length);
+        return DateTime.TryParseExact(s, "yyyyMMddHHmmss", CultureInfo.InvariantCulture, DateTimeStyles.None, out timestamp);
+    }
+
+    /// <summary>UI display name for a lot id (decodes virtual day lots and merged lots).</summary>
+    public static string FormatLotForDisplay(string lot)
+    {
+        if (TryDecodeMergedLot(lot, out var ts))
+            return MergedLotDisplayPrefix + ts.ToString("yyyy-MM-dd HH:mm");
+        if (TryDecodeVirtualDayLot(lot, out var d))
+            return d.ToString("yyyy-MM-dd") + VirtualDayLotDisplaySuffix;
+        return lot;
+    }
 
     /// <summary>True for a folder name shaped exactly like a 14-digit timestamp `yyyyMMddHHmmss`.</summary>
     public static bool TryParseTimestampFolderName(string name, out DateTime ts)
@@ -515,6 +553,9 @@ public static class FileLocator
     /// </summary>
     public static List<string> ResolveLotFolders(string athSysPath, string partNo, string lot)
     {
+        // Session-only merged lots have no physical folders on disk.
+        if (TryDecodeMergedLot(lot, out _)) return new();
+
         var partDir = GetPartResultsDir(athSysPath, partNo);
         if (!Directory.Exists(partDir)) return new();
 

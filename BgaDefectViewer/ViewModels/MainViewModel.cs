@@ -15,6 +15,10 @@ public class MainViewModel : ViewModelBase
     private MasterBall[]? _masterBalls;
     private bool _programmaticNav;
 
+    /// <summary>Session-only cache of merged virtual lots, keyed by their <c>__merged__</c> id.</summary>
+    private readonly Dictionary<string, LotSession> _mergedSessions =
+        new(StringComparer.OrdinalIgnoreCase);
+
     private string _athleteSysPath = "";
     public string AthleteSysPath
     {
@@ -138,17 +142,19 @@ public class MainViewModel : ViewModelBase
 
         BrowsePathCommand = new RelayCommand(BrowsePath);
         ReloadLotCommand = new RelayCommand(
-            _ => OnLotNumberChanged(),
-            _ => !string.IsNullOrEmpty(SelectedPartNumber)
-              && !string.IsNullOrEmpty(SelectedLotNumber));
+            _ => Reload(),
+            _ => !string.IsNullOrEmpty(AthleteSysPath));
 
         // ── 事件訂閱 ──────────────────────────────────────────────────
         LotMonitor.RowDoubleClicked += OnSubstrateRowDoubleClicked;
         LotMonitor.RowSingleClicked += OnLotMonitorRowSingleClicked;
+        LotMonitor.MergeLotsRequested += OnMergeLotsRequested;
 
         SubstrateMap.SubstrateSelected += OnSubstrateMapSelected;
         SubstrateMap.SubstrateDoubleClicked += OnSubstrateMapDoubleClicked;
         SubstrateMap.DieDoubleClicked += OnSubstrateMapDieDoubleClicked;
+
+        RefreshCanMergeLots();
 
         // ── 還原設定 ──────────────────────────────────────────────────
         if (!string.IsNullOrEmpty(_settings.AthleteSysPath))
@@ -207,6 +213,8 @@ public class MainViewModel : ViewModelBase
         LotNumbers.Clear();
         SelectedLotNumber = null;
         Settings.Clear();
+        _mergedSessions.Clear();   // path change invalidates all merged sessions
+        RefreshCanMergeLots();
     }
 
     /// <summary>
@@ -241,14 +249,19 @@ public class MainViewModel : ViewModelBase
         if (string.IsNullOrEmpty(SelectedPartNumber))
         {
             LotNumbers.Clear();
+            RefreshCanMergeLots();
             return;
         }
 
         var current = SelectedLotNumber;
-        var lots = FileLocator.GetLotNumbers(AthleteSysPath, SelectedPartNumber, LotSortMode);
+        var lots = FileLocator.GetLotNumbers(AthleteSysPath, SelectedPartNumber, LotSortMode).ToList();
+        // Preserve any session-only merged lots so re-sorting doesn't drop them.
+        foreach (var mergedId in _mergedSessions.Keys)
+            if (!lots.Contains(mergedId, StringComparer.OrdinalIgnoreCase))
+                lots.Add(mergedId);
         LotNumbers = new ObservableCollection<string>(lots);
 
-        if (current != null && lots.Contains(current))
+        if (current != null && lots.Contains(current, StringComparer.OrdinalIgnoreCase))
         {
             _selectedLotNumber = current;
             OnPropertyChanged(nameof(SelectedLotNumber));
@@ -258,15 +271,20 @@ public class MainViewModel : ViewModelBase
             _selectedLotNumber = null;
             OnPropertyChanged(nameof(SelectedLotNumber));
         }
+        RefreshCanMergeLots();
     }
 
     private async void OnPartNumberChanged()
     {
         if (string.IsNullOrEmpty(SelectedPartNumber)) return;
 
+        // Part# change invalidates session-only merged lots from the previous Part#.
+        _mergedSessions.Clear();
+
         var lots = FileLocator.GetLotNumbers(AthleteSysPath, SelectedPartNumber, LotSortMode);
         LotNumbers = new ObservableCollection<string>(lots);
         SelectedLotNumber = null;
+        RefreshCanMergeLots();
 
         // Load master CSV immediately so Substrate Viewer shows coordinate map
         var masterCheck = FileLocator.FindMasterCsv(AthleteSysPath, SelectedPartNumber);
@@ -289,6 +307,28 @@ public class MainViewModel : ViewModelBase
     private async void OnLotNumberChanged()
     {
         if (string.IsNullOrEmpty(SelectedPartNumber) || string.IsNullOrEmpty(SelectedLotNumber)) return;
+
+        // ── Session-only merged lot: load from in-memory cache, skip all disk I/O ──
+        if (FileLocator.TryDecodeMergedLot(SelectedLotNumber!, out _) &&
+            _mergedSessions.TryGetValue(SelectedLotNumber!, out var mergedSession))
+        {
+            try
+            {
+                StatusText = "Loading merged lot...";
+                LotMonitor.Load(mergedSession);
+                SubstrateMap.Load(Enumerable.Empty<Models.SubstrateMap>());
+                DefectMap.Load(null);
+                RecurringDefect.Load(null, _masterBalls);
+                Settings.UpdateFileStatuses(AthleteSysPath, SelectedPartNumber, SelectedLotNumber);
+                StatusText = $"Merged lot loaded: {mergedSession.Rows.Count} rows / {mergedSession.SubstrateCount} substrates (in-memory)";
+            }
+            catch (Exception ex)
+            {
+                StatusText = $"Error loading merged lot: {ex.Message}";
+                MessageBox.Show(ex.ToString(), "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            return;
+        }
 
         try
         {
@@ -574,4 +614,127 @@ public class MainViewModel : ViewModelBase
         }
     }
 
+    // ── Reload (rescan folders + re-read files) ───────────────────────
+
+    /// <summary>
+    /// 重新讀取資料 — 不只重讀檔案內容，也會 rescan 磁碟上是否新增了 Part# 或 Lot# 資料夾。
+    /// 生產中按下時，若新批號剛產生，會立即出現在 ComboBox 中。
+    /// </summary>
+    private void Reload()
+    {
+        if (string.IsNullOrEmpty(AthleteSysPath)) return;
+
+        // Re-enumerate Part# folders (catches newly-created Parts)
+        RefreshPartNumbers();
+
+        // Re-enumerate Lot# folders for the current Part# (catches newly-created Lots)
+        if (!string.IsNullOrEmpty(SelectedPartNumber))
+            RefreshLotNumbers();
+
+        // If still have a valid Part#/Lot#, re-read all files for them.
+        if (!string.IsNullOrEmpty(SelectedPartNumber) && !string.IsNullOrEmpty(SelectedLotNumber))
+            OnLotNumberChanged();
+        else
+            StatusText = "Reload: 已重新掃描資料夾。" +
+                         (string.IsNullOrEmpty(SelectedPartNumber)
+                             ? " 請選擇 Part#。"
+                             : " 請選擇 Lot#。");
+    }
+
+    // ── 合併批號（Session-only 虛擬批）────────────────────────────────
+
+    private static bool IsMergedLot(string id) =>
+        !string.IsNullOrEmpty(id) && id.StartsWith(FileLocator.MergedLotPrefix, StringComparison.Ordinal);
+
+    /// <summary>
+    /// Updates <c>LotMonitor.CanMergeLots</c>. Called after every replacement / mutation
+    /// of <see cref="LotNumbers"/>. Merged-virtual-lot ids are excluded from the count.
+    /// </summary>
+    private void RefreshCanMergeLots()
+    {
+        LotMonitor.CanMergeLots = LotNumbers.Count(id => !IsMergedLot(id)) >= 2;
+    }
+
+    /// <summary>Opens the merge dialog and, on OK, builds + selects a session-only virtual lot.</summary>
+    private void OnMergeLotsRequested()
+    {
+        if (string.IsNullOrEmpty(SelectedPartNumber))
+        {
+            MessageBox.Show("請先選擇 Part# 後再合併。", "合併批號", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var dialog = new Views.LotMergeDialog(LotNumbers) { Owner = Application.Current.MainWindow };
+        if (dialog.ShowDialog() != true) return;
+        var picks = dialog.SelectedLotIds;
+        if (picks.Count < 2) return;
+
+        try
+        {
+            var merged = BuildMergedSession(picks);
+            if (merged.Rows.Count == 0)
+            {
+                MessageBox.Show("所選 Lot 皆無法讀取資料，已取消合併。", "合併批號",
+                                MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            var mergedId = FileLocator.EncodeMergedLot(DateTime.Now);
+            _mergedSessions[mergedId] = merged;
+            LotNumbers.Add(mergedId);
+            RefreshCanMergeLots();
+            SelectedLotNumber = mergedId;     // triggers OnLotNumberChanged → merged branch
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"Merge failed: {ex.Message}";
+            MessageBox.Show(ex.ToString(), "合併批號失敗", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    /// <summary>
+    /// Reads each source lot's <c>.summary.csv</c> via the existing parser path and concatenates
+    /// the Rows into a single <see cref="LotSession"/>. No files are modified.
+    /// </summary>
+    private LotSession BuildMergedSession(IReadOnlyList<string> lotIds)
+    {
+        var merged = new List<SummaryRow>();
+        var sources = new List<string>();
+
+        foreach (var lotId in lotIds)
+        {
+            var chk = FileLocator.FindSummaryCsv(AthleteSysPath, SelectedPartNumber!, lotId);
+            if (!chk.Found) continue;
+
+            LotSession part;
+            try
+            {
+                part = FileLocator.TryDecodeVirtualDayLot(lotId, out var d)
+                    ? SummaryCsvParser.ParseFilteredByDate(chk.ActualPath!, d)
+                    : SummaryCsvParser.ParseFirstLot(chk.ActualPath!);
+            }
+            catch
+            {
+                continue;
+            }
+
+            if (part.Rows.Count == 0) continue;
+            merged.AddRange(part.Rows);
+            sources.Add(FileLocator.FormatLotForDisplay(lotId));
+        }
+
+        for (int i = 0; i < merged.Count; i++)
+            merged[i].RowIndex = i;
+
+        var now = DateTime.Now;
+        var session = new LotSession
+        {
+            LotName = $"{FileLocator.MergedLotDisplayPrefix}{now:yyyy-MM-dd HH:mm}" +
+                      (sources.Count > 0 ? $" ({sources.Count} lots: {string.Join(", ", sources)})" : ""),
+            SubstrateCount = merged.Select(r => r.SubstrateId).Distinct().Count(),
+            Rows = merged,
+            Summary = LotSummaryCalculator.Calculate(merged)
+        };
+        return session;
+    }
 }
