@@ -48,7 +48,9 @@
             </Grid.ColumnDefinitions>
             <TextBlock Grid.Column="0" Text="Source:" VerticalAlignment="Center" Margin="4,0"/>
             <TextBox Grid.Column="1" Text="{Binding AthleteSysPath, UpdateSourceTrigger=PropertyChanged}"
-                     VerticalAlignment="Center" Margin="4,0"/>
+                     VerticalAlignment="Center" Margin="4,0"
+                     ToolTip="資料來源根目錄 (含 kbgadata / kbgaresults)&#x0a;雙擊以在檔案總管中開啟此路徑"
+                     MouseDoubleClick="SourcePathTextBox_MouseDoubleClick"/>
             <Button Grid.Column="2" Content="Browse..." Command="{Binding BrowsePathCommand}"
                     VerticalAlignment="Center" Margin="4,0" Padding="8,2"/>
             <TextBlock Grid.Column="3" Text="Part#:" VerticalAlignment="Center" Margin="12,0,4,0"/>
