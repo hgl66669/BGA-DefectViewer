@@ -34,6 +34,10 @@ public class SimulatorViewModel : ViewModelBase
 
         GenerateCommand = new RelayCommand(_ => _ = RunGenerateAsync(), _ => !_generating);
         ResetViewCommand = new RelayCommand(_ => ResetViewRequested?.Invoke());
+        // Pad-follow rule of thumb: Pad copper opening is normally cut 10 µm
+        // larger than the nominal ball diameter (per KBGA recipe convention).
+        FollowBlobDiameterCommand = new RelayCommand(
+            _ => PadDiameter = Math.Round(_blobDiameterMean + 0.010, 4));
 
         // Kick off initial generation so canvas isn't empty
         ScheduleRegenerate();
@@ -81,6 +85,31 @@ public class SimulatorViewModel : ViewModelBase
 
     private double _masterDiameterStdDev = 0.0;
     public double MasterDiameterStdDev { get => _masterDiameterStdDev; set { if (SetProperty(ref _masterDiameterStdDev, value)) ScheduleRegenerate(); } }
+
+    // ── Pad (copper recess) ────────────────────────────────────────────────
+    private bool _padEnabled = true;
+    public bool PadEnabled { get => _padEnabled; set { if (SetProperty(ref _padEnabled, value)) ScheduleRegenerate(); } }
+
+    private double _padDiameter = 0.090;
+    public double PadDiameter { get => _padDiameter; set { if (SetProperty(ref _padDiameter, value)) ScheduleRegenerate(); } }
+
+    private int _padDepthUm = 20;
+    public int PadDepthUm { get => _padDepthUm; set { if (SetProperty(ref _padDepthUm, value)) ScheduleRegenerate(); } }
+
+    private double _padEdgeSoftness = 0.15;
+    public double PadEdgeSoftness { get => _padEdgeSoftness; set { if (SetProperty(ref _padEdgeSoftness, value)) ScheduleRegenerate(); } }
+
+    private double _padCenterDimming = 0.3;
+    public double PadCenterDimming { get => _padCenterDimming; set { if (SetProperty(ref _padCenterDimming, value)) ScheduleRegenerate(); } }
+
+    private double _padTextureAmount = 0.4;
+    public double PadTextureAmount { get => _padTextureAmount; set { if (SetProperty(ref _padTextureAmount, value)) ScheduleRegenerate(); } }
+
+    private byte _sensorReadNoise = 2;
+    public byte SensorReadNoise { get => _sensorReadNoise; set { if (SetProperty(ref _sensorReadNoise, value)) ScheduleRegenerate(); } }
+
+    private double _sensorShotNoise = 0.05;
+    public double SensorShotNoise { get => _sensorShotNoise; set { if (SetProperty(ref _sensorShotNoise, value)) ScheduleRegenerate(); } }
 
     // ── Blob ───────────────────────────────────────────────────────────────
     private double _blobDiameterMean = 0.08;
@@ -184,6 +213,15 @@ public class SimulatorViewModel : ViewModelBase
     private double _offsetMaxMm = 0.15;
     public double OffsetMaxMm { get => _offsetMaxMm; set { if (SetProperty(ref _offsetMaxMm, value)) ScheduleRegenerate(); } }
 
+    private bool _enableCollision = true;
+    public bool EnableCollision { get => _enableCollision; set { if (SetProperty(ref _enableCollision, value)) ScheduleRegenerate(); } }
+
+    private double _collisionGapMean = 0.0;
+    public double CollisionGapMean { get => _collisionGapMean; set { if (SetProperty(ref _collisionGapMean, value)) ScheduleRegenerate(); } }
+
+    private double _collisionGapVariance = 0.005;
+    public double CollisionGapVariance { get => _collisionGapVariance; set { if (SetProperty(ref _collisionGapVariance, value)) ScheduleRegenerate(); } }
+
     // ── Missing sub-params ─────────────────────────────────────────────────
     private QuantityMode _missingQuantityMode = QuantityMode.Probability;
     public QuantityMode MissingQuantityMode
@@ -234,6 +272,7 @@ public class SimulatorViewModel : ViewModelBase
 
     public ICommand GenerateCommand { get; }
     public ICommand ResetViewCommand { get; }
+    public ICommand FollowBlobDiameterCommand { get; }
 
     public SimulationParams BuildParams() => new()
     {
@@ -245,6 +284,14 @@ public class SimulatorViewModel : ViewModelBase
         StaggerOffsetX = _staggerOffsetX,
         MasterDiameter = _masterDiameter,
         MasterDiameterStdDev = _masterDiameterStdDev,
+        PadEnabled = _padEnabled,
+        PadDiameter = _padDiameter,
+        PadDepthUm = _padDepthUm,
+        PadEdgeSoftness = _padEdgeSoftness,
+        PadCenterDimming = _padCenterDimming,
+        PadTextureAmount = _padTextureAmount,
+        SensorReadNoise = _sensorReadNoise,
+        SensorShotNoise = _sensorShotNoise,
         BlobDiameterMean = _blobDiameterMean,
         BlobDiameterStdDev = _blobDiameterStdDev,
         BlobAcircularityMean = _blobAcircularityMean,
@@ -262,6 +309,9 @@ public class SimulatorViewModel : ViewModelBase
         OffsetCount = _offsetCount,
         OffsetMinMm = _offsetMinMm,
         OffsetMaxMm = _offsetMaxMm,
+        EnableCollision = _enableCollision,
+        CollisionGapMean = _collisionGapMean,
+        CollisionGapVariance = _collisionGapVariance,
         MissingQuantityMode = _missingQuantityMode,
         MissingProbability = _missingProbability,
         MissingCount = _missingCount,

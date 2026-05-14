@@ -55,6 +55,19 @@ public class SimulationCanvas : FrameworkElement
         MouseDown += OnMouseDown;
         MouseUp += OnMouseUp;
         MouseMove += OnMouseMove;
+        MouseLeave += OnMouseLeave;
+    }
+
+    /// <summary>Brightness (0..255) of the simulated pixel under the cursor;
+    /// null when cursor is outside the canvas or no frame is loaded. KBGA UI
+    /// shows the same "Value: nn" readout next to its grid toolbar.</summary>
+    public static readonly DependencyProperty HoverValueProperty =
+        DependencyProperty.Register(nameof(HoverValue), typeof(int?), typeof(SimulationCanvas),
+            new PropertyMetadata(null));
+    public int? HoverValue
+    {
+        get => (int?)GetValue(HoverValueProperty);
+        private set => SetValue(HoverValueProperty, value);
     }
 
     protected override int VisualChildrenCount => _visuals.Count;
@@ -126,8 +139,10 @@ public class SimulationCanvas : FrameworkElement
 
     /// <summary>
     /// Pixel-level rasterization simulating a real KBGA camera frame.
-    /// Each blob renders as a donut: bright rim near r·0.75 falling off to background.
-    /// Models the specular highlight pattern of LED-lit spherical solder balls.
+    /// Each blob renders as a donut; pad/blob/noise passes layer in order.
+    /// Blob writes use ADDITIVE blending — when two balls overlap their rim
+    /// contributions sum (incoherent light addition), producing the bright
+    /// cusp/lens band visible where adjacent balls touch in real frames.
     /// </summary>
     private unsafe void RenderAsPixelImage()
     {
@@ -159,6 +174,26 @@ public class SimulationCanvas : FrameworkElement
 
         var dataRect = ComputeVisibleDataRect(w, h);
 
+        // ── Pad pass ── Dark disks at fixed Master grid positions. Drawn
+        // before blobs (which sit on top) and after bg fill (direct overwrite).
+        int padDarkness = p.PadEnabled ? (int)Math.Round(p.PadDepthUm * PadDarkenPerMicron) : 0;
+        if (padDarkness > 0 && p.PadDiameter > 0)
+        {
+            var masters = _frame.Masters;
+            double padSoftness = Math.Clamp(p.PadEdgeSoftness, 0.0, 1.0);
+            double padCoreRatio = 1.0 - padSoftness;
+            double padCenterDim = Math.Clamp(p.PadCenterDimming, 0.0, 1.0);
+            double padTexAmount = Math.Max(0.0, p.PadTextureAmount);
+            uint padTexSeed = (uint)p.Seed * 0xC2B2AE35u;
+            foreach (var (row, col) in _layout.EnumerateVisible(dataRect, p))
+            {
+                int idx = row * p.Cols + col;
+                DrawPad(pBack, stridePixels, w, h, masters[idx],
+                        p.PadDiameter, padDarkness, padCoreRatio, padSoftness,
+                        padCenterDim, padTexAmount, padTexSeed, bg);
+            }
+        }
+
         foreach (var (row, col) in _layout.EnumerateVisible(dataRect, p))
         {
             int idx = row * p.Cols + col;
@@ -167,6 +202,41 @@ public class SimulationCanvas : FrameworkElement
             if (blob.Brightness <= bg) continue;       // No contrast → invisible
 
             DrawBlobDonut(pBack, stridePixels, w, h, blob, bg);
+        }
+
+        // ── Noise pass ── Signal-dependent Gaussian jitter. σ²(I) =
+        // readNoise² + I·shotCoef, so dark areas (pad/bg) carry low σ while
+        // the bright blob rim gets photon shot noise. Matches the per-pixel
+        // grain visible in real camera frames and means subsequent binarization
+        // will see the right amount of noise per intensity. Deterministic
+        // from (sx, sy, Seed).
+        int readNoise = p.SensorReadNoise;
+        double shotCoef = p.SensorShotNoise;
+        if (readNoise > 0 || shotCoef > 0)
+        {
+            double readVar = (double)readNoise * readNoise;
+            uint seedHash = (uint)p.Seed * 2654435761u + 0xDEADBEEFu;
+            uint* pUint = (uint*)pBack;
+            for (int sy = 0; sy < h; sy++)
+            {
+                uint* rowPtr = pUint + sy * stridePixels;
+                uint rowHash = ((uint)sy * 0x85EBCA6Bu) ^ seedHash;
+                for (int sx = 0; sx < w; sx++)
+                {
+                    uint hh = (uint)sx * 0x9E3779B9u ^ rowHash;
+                    hh ^= hh >> 16; hh *= 0x7FEB352Du;
+                    uint existing = rowPtr[sx];
+                    int intensity = (int)(existing & 0xFF);
+                    double sigma = Math.Sqrt(readVar + intensity * shotCoef);
+                    if (sigma < 1e-6) continue;
+                    int noise = (int)(GaussianLUT[hh & 0xFF] * sigma / 10.0);
+                    if (noise == 0) continue;
+                    int v = intensity + noise;
+                    if (v < 0) v = 0;
+                    else if (v > 255) v = 255;
+                    rowPtr[sx] = MakeGrayPixel((byte)v);
+                }
+            }
         }
 
         _pixelBitmap.AddDirtyRect(new Int32Rect(0, 0, w, h));
@@ -201,6 +271,62 @@ public class SimulationCanvas : FrameworkElement
     private const double PerturbMax = 1.0;
     private const double PerturbAcircBaseline = 1.0;
     private const double RadialFloorRatio = 0.3; // r(θ) ≥ 0.3·r₀ for sanity
+
+    // Donut intensity profile — asymmetric, calibrated against KBGA reference
+    // images of dome-lit BGA balls. The previous symmetric (peak 0.75, halfwidth
+    // 0.30) profile left a central dark core ~55% of diameter and a thin bright
+    // band. Real balls show a wide bright rim covering ~70% of diameter and only
+    // a small dark spot at the apex specular shadow.
+    private const double DonutPeakRadius = 0.55;
+    private const double DonutInnerHalfwidth = 0.38;  // peak → dark core boundary
+    private const double DonutOuterHalfwidth = 0.45;  // peak → background boundary
+
+    // Pad rendering: depth → darkness offset. 20µm → 8 grey levels below bg.
+    private const double PadDarkenPerMicron = 0.4;
+
+    // Contact-pair effects (cusp specular + back-rim shadow). Both kick in
+    // when centre-to-centre distance ≤ (r₁+r₂)·CuspContactMargin. With
+    // collision resolution ON, neighbouring offset balls park at exactly
+    // r₁+r₂ where each donut profile alone gives 0 at the contact tangent
+    // (both normD = 1.0). The cusp specular fills that geometric gap with
+    // a Gaussian highlight; the back-rim shadow dims the outer rim that
+    // faces away from the neighbour (light source partially occluded).
+    private const double CuspContactMargin = 1.15;
+    private const double CuspSpecularPeak = 0.20;        // per side; gated by (1 − smooth) so it doesn't stack on donut peak
+    private const double CuspSpecularInvSigmaSq2 = 50.0; // 1/(2σ²), σ ≈ 0.1 in normD units
+    private const double ContactShadowMax = 0.25;        // max dim on far rim
+    private const double ContactShadowRimStart = 0.70;   // shadow only for normD ≥ 0.70
+
+    private struct ContactInfo
+    {
+        public double cx, cy;     // neighbour centre (mm)
+        public double rMm;        // neighbour radius (mm)
+        public double rOuter2;    // (rMm × 1.05)² for fast outside-bbox skip
+        public double absLim;     // manhattan early-cull (rMm × 1.05)
+        public double toNbX, toNbY; // unit vector self→nb
+        public int amp;           // nb.Brightness − bg
+    }
+
+    // Pre-generated Gaussian samples scaled by 10× — sum of 12 uniforms gives
+    // approximate N(0,1), then ×10 fits sbyte cleanly. Runtime noise uses
+    // (lut[h] * sigma / 10) which costs one hash + one table lookup + one
+    // integer mul-div per pixel. ~2-4× faster than computing Box-Muller.
+    private static readonly sbyte[] GaussianLUT = BuildGaussianLUT();
+    private static sbyte[] BuildGaussianLUT()
+    {
+        var lut = new sbyte[256];
+        var rng = new Random(0x5A17C0DE);
+        for (int i = 0; i < 256; i++)
+        {
+            double sum = 0;
+            for (int j = 0; j < 12; j++) sum += rng.NextDouble() - 0.5;
+            int v = (int)Math.Round(sum * 10);  // store at 10× scale
+            if (v > 127) v = 127;
+            else if (v < -127) v = -127;
+            lut[i] = (sbyte)v;
+        }
+        return lut;
+    }
 
     private unsafe void DrawBlobDonut(byte* pBuffer, int stridePixels, int w, int h,
                                        in SimulatedBlob blob, byte bg)
@@ -243,8 +369,56 @@ public class SimulationCanvas : FrameworkElement
             var (px, py) = _transform.DataToScreen(cx, cy);
             if ((uint)px >= (uint)w || (uint)py >= (uint)h) return;
             int v = bg + (int)(amp * 0.40);
-            WriteMaxPixel(pUint + py * stridePixels + px, v);
+            WriteAdditivePixel(pUint + py * stridePixels + px, v, bg);
             return;
+        }
+
+        // ── Contact detection ── Find ≤ 8 grid neighbours within touching
+        // distance for cusp specular + back-rim shadow.
+        Span<ContactInfo> contacts = stackalloc ContactInfo[8];
+        int contactCount = 0;
+        {
+            int cols = _frame.Params.Cols;
+            int rows = _frame.Params.Rows;
+            int row = blob.MasterIndex / cols;
+            int col = blob.MasterIndex % cols;
+            double rSelfMax = radiusMm * (1.0 + perturbGamma);
+            var allBlobs = _frame.Blobs;
+            for (int dr = -1; dr <= 1 && contactCount < 8; dr++)
+            {
+                int nr = row + dr;
+                if (nr < 0 || nr >= rows) continue;
+                for (int dc = -1; dc <= 1 && contactCount < 8; dc++)
+                {
+                    if (dr == 0 && dc == 0) continue;
+                    int nc = col + dc;
+                    if (nc < 0 || nc >= cols) continue;
+                    ref readonly var nb = ref allBlobs[nr * cols + nc];
+                    if (!nb.IsPresent) continue;
+                    if (nb.Brightness <= bg) continue;
+
+                    double dxNb = nb.CenterX - cx;
+                    double dyNb = nb.CenterY - cy;
+                    double dNb2 = dxNb * dxNb + dyNb * dyNb;
+                    double rNb = nb.Diameter / 2.0;
+                    double rNbMax = rNb * (1.0 + nb.ShapeDeformation);
+                    double thresh = (rSelfMax + rNbMax) * CuspContactMargin;
+                    if (dNb2 > thresh * thresh) continue;
+                    double dNb = Math.Sqrt(dNb2);
+                    if (dNb < 1e-9) continue;  // degenerate co-centric — skip
+
+                    ref var slot = ref contacts[contactCount];
+                    slot.cx = nb.CenterX;
+                    slot.cy = nb.CenterY;
+                    slot.rMm = rNb;
+                    slot.rOuter2 = (rNb * 1.05) * (rNb * 1.05);
+                    slot.absLim = rNb * 1.05;
+                    slot.toNbX = dxNb / dNb;
+                    slot.toNbY = dyNb / dNb;
+                    slot.amp = nb.Brightness - bg;
+                    contactCount++;
+                }
+            }
         }
 
         // Screen-space bounding box. Radial perturbation can grow the ball
@@ -295,30 +469,205 @@ public class SimulationCanvas : FrameworkElement
                 if (d2 > rOuter2) continue;
 
                 double normD = Math.Sqrt(d2) / rLocal;
-                // Donut profile: bright rim at normD = 0.75, halfwidth 0.30
-                double t = 1.0 - Math.Abs(normD - 0.75) / 0.30;
-                if (t <= 0) continue;
-                if (t > 1) t = 1;
-                double smooth = t * t * (3.0 - 2.0 * t);
-                int val = bg + (int)(amp * smooth);
-                if (val <= bg) continue;
+                // Asymmetric donut profile (see DonutPeakRadius / Halfwidth consts).
+                double dFromPeak = normD - DonutPeakRadius;
+                double t = dFromPeak >= 0
+                    ? 1.0 - dFromPeak / DonutOuterHalfwidth
+                    : 1.0 + dFromPeak / DonutInnerHalfwidth;
 
-                // Layer 2: azimuthal brightness modulation — dims rim sectors.
-                // High-acirc balls develop dark gaps that Stage 2 binarization
-                // will turn into open C-shapes.
-                if (perturbBeta > 0)
+                int val = bg;
+                double smooth = 0;
+                if (t > 0)
                 {
-                    double sumAz = 0;
-                    for (int k = 0; k < ShapeHarmonicCount; k++)
-                        sumAz += azAmps[k] * Math.Cos((k + ShapeHarmonicMinMode) * theta + azPhases[k]);
-                    double factor = 1.0 + perturbBeta * sumAz;
-                    if (factor <= 0) continue;
-                    if (factor > 1) factor = 1;
-                    val = bg + (int)((val - bg) * factor);
-                    if (val <= bg) continue;
+                    if (t > 1) t = 1;
+                    smooth = t * t * (3.0 - 2.0 * t);
+                    val = bg + (int)(amp * smooth);
+
+                    // Layer 2: azimuthal brightness modulation — dims rim sectors.
+                    // High-acirc balls develop dark gaps that Stage 2 binarization
+                    // will turn into open C-shapes.
+                    if (perturbBeta > 0 && val > bg)
+                    {
+                        double sumAz = 0;
+                        for (int k = 0; k < ShapeHarmonicCount; k++)
+                            sumAz += azAmps[k] * Math.Cos((k + ShapeHarmonicMinMode) * theta + azPhases[k]);
+                        double factor = 1.0 + perturbBeta * sumAz;
+                        if (factor <= 0) val = bg;
+                        else
+                        {
+                            if (factor > 1) factor = 1;
+                            val = bg + (int)((val - bg) * factor);
+                        }
+                    }
                 }
 
-                WriteMaxPixel(rowPtr + sx, val);
+                // ── Contact effects ── Cusp specular fills the tangent gap
+                // between near-touching balls; gated by (1 − smooth) so it
+                // attenuates in donut peak region (prevents over-saturating
+                // pixels that already get full donut brightness). Back-rim
+                // shadow dims pixels whose surface normal faces away.
+                if (contactCount > 0)
+                {
+                    double dirMag = normD * rLocal;
+                    double invDirMag = dirMag > 1e-9 ? 1.0 / dirMag : 0;
+                    double cuspMask = 1.0 - smooth;          // 1 at rim/edge, 0 at donut peak
+                    double cuspBoost = 0;
+                    double shadowMul = 1.0;
+                    for (int n = 0; n < contactCount; n++)
+                    {
+                        ref var nb = ref contacts[n];
+                        double nDx = cdx - nb.cx;
+                        double nDy = cdy - nb.cy;
+                        if (Math.Abs(nDx) > nb.absLim || Math.Abs(nDy) > nb.absLim) continue;
+                        double nD2 = nDx * nDx + nDy * nDy;
+                        if (nD2 > nb.rOuter2) continue;
+                        double nNormD = Math.Sqrt(nD2) / nb.rMm;
+
+                        // Cusp specular — peak Gaussian centred on (1.0, 1.0)
+                        double devSelf = normD - 1.0;
+                        double devNb = nNormD - 1.0;
+                        if (devSelf >= -0.20 && devSelf <= 0.10
+                            && devNb >= -0.20 && devNb <= 0.10)
+                        {
+                            double wCusp = Math.Exp(-(devSelf * devSelf + devNb * devNb) * CuspSpecularInvSigmaSq2);
+                            cuspBoost += nb.amp * CuspSpecularPeak * wCusp * cuspMask;
+                        }
+
+                        // Back-rim shadow — pixel direction · toNb < 0 → away from neighbour
+                        if (val > bg && normD >= ContactShadowRimStart && invDirMag > 0)
+                        {
+                            double dot = (ddx * nb.toNbX + ddy * nb.toNbY) * invDirMag;
+                            if (dot < 0)
+                            {
+                                double rimWeight = (normD - ContactShadowRimStart) / (1.0 - ContactShadowRimStart);
+                                if (rimWeight > 1) rimWeight = 1;
+                                shadowMul *= 1.0 - (-dot) * ContactShadowMax * rimWeight;
+                            }
+                        }
+                    }
+                    if (shadowMul < 1.0 && val > bg)
+                        val = bg + (int)((val - bg) * shadowMul);
+                    if (cuspBoost > 0)
+                    {
+                        val += (int)cuspBoost;
+                        if (val > 255) val = 255;
+                    }
+                }
+
+                if (val <= bg) continue;
+                WriteAdditivePixel(rowPtr + sx, val, bg);
+            }
+        }
+    }
+
+    /// <summary>Render a single pad as a soft-edged bowl with copper/PCB
+    /// microstructure. Pad is fixed at Master position (does NOT move with
+    /// blob offset). Direct overwrite — runs after bg fill, before blob pass.
+    /// floor profile is a bowl: extra dimming at the geometric center fading
+    /// to flat across the core, then smoothstep falloff over the outer
+    /// softness band. Microstructure is a 2×2-block-aligned per-pixel hash
+    /// scaled by padTextureAmount (matches the "patchy" look of real recess).</summary>
+    private unsafe void DrawPad(byte* pBuffer, int stridePixels, int w, int h,
+                                 in SimulatedMaster master, double padDiameter,
+                                 int padDarkness, double padCoreRatio,
+                                 double padSoftness, double padCenterDimming,
+                                 double padTextureAmount, uint padTextureSeed,
+                                 byte bg)
+    {
+        if (_transform == null || _frame == null) return;
+
+        double cx = master.X;
+        double cy = master.Y;
+        double radiusMm = padDiameter / 2.0;
+        double radiusPx = _transform.BallRadiusPixels(padDiameter);
+        uint* pUint = (uint*)pBuffer;
+
+        // Sub-pixel pad: collapse to single pixel at floor brightness.
+        if (radiusPx < 1.0)
+        {
+            var (px, py) = _transform.DataToScreen(cx, cy);
+            if ((uint)px >= (uint)w || (uint)py >= (uint)h) return;
+            int floorV = bg - padDarkness;
+            if (floorV < 0) floorV = 0;
+            pUint[py * stridePixels + px] = MakeGrayPixel((byte)floorV);
+            return;
+        }
+
+        var (sxMin0, syMax0) = _transform.DataToScreen(cx - radiusMm, cy - radiusMm);
+        var (sxMax0, syMin0) = _transform.DataToScreen(cx + radiusMm, cy + radiusMm);
+        int sxMin = Math.Max(0, sxMin0);
+        int sxMax = Math.Min(w - 1, sxMax0);
+        int syMin = Math.Max(0, syMin0);
+        int syMax = Math.Min(h - 1, syMax0);
+        if (sxMax < sxMin || syMax < syMin) return;
+
+        double r2 = radiusMm * radiusMm;
+        double mmPerPx = _frame.Params.MmPerPixel;
+        double invMmPerPx = 1.0 / mmPerPx;
+
+        // Texture σ ≈ amount × padDarkness. Scaled by /10 because GaussianLUT
+        // samples are stored at 10× scale.
+        double texSigma = padTextureAmount * padDarkness;
+        uint padHash = (uint)master.Row * 0x9E3779B9u ^ (uint)master.Col * 0x85EBCA6Bu ^ padTextureSeed;
+
+        for (int sy = syMin; sy <= syMax; sy++)
+        {
+            uint* rowPtr = pUint + sy * stridePixels;
+            for (int sx = sxMin; sx <= sxMax; sx++)
+            {
+                var (dx, dy) = _transform.ScreenToData(sx + 0.5, sy + 0.5);
+                // Snap to camera pixel-grid centre (same as blob pass).
+                double cdx = (Math.Floor(dx * invMmPerPx) + 0.5) * mmPerPx;
+                double cdy = (Math.Floor(dy * invMmPerPx) + 0.5) * mmPerPx;
+                double ddx = cdx - cx;
+                double ddy = cdy - cy;
+                double d2 = ddx * ddx + ddy * ddy;
+                if (d2 > r2) continue;
+
+                double normD = Math.Sqrt(d2) / radiusMm;
+
+                // Bowl profile: floor ≥ 1 across the core (1 + bowl dim at
+                // center, falling smoothly to 1 at coreRatio), then smoothstep
+                // down to 0 over the outer softness band.
+                double floor;
+                if (normD <= padCoreRatio)
+                {
+                    if (padCenterDimming > 0 && padCoreRatio > 1e-6)
+                    {
+                        double radialT = normD / padCoreRatio;       // 0 center → 1 edge of core
+                        double bowl = 1.0 - radialT * radialT;       // quadratic bowl falloff
+                        floor = 1.0 + padCenterDimming * bowl;
+                    }
+                    else
+                    {
+                        floor = 1.0;
+                    }
+                }
+                else if (padSoftness > 1e-6)
+                {
+                    double t = (normD - padCoreRatio) / padSoftness;
+                    if (t > 1) t = 1;
+                    floor = 1.0 - t * t * (3.0 - 2.0 * t);
+                }
+                else
+                {
+                    continue;  // beyond core, no soft band → outside pad
+                }
+
+                int v = bg - (int)(padDarkness * floor);
+                if (texSigma > 0)
+                {
+                    // 2×2-block-aligned hash gives coarser spatial frequency
+                    // than per-pixel — looks like "patches" not just grain.
+                    uint th = ((uint)(sx >> 1) * 0x6C8E9CF5u)
+                            ^ ((uint)(sy >> 1) * 0x47A4D87Bu)
+                            ^ padHash;
+                    th ^= th >> 16; th *= 0x7FEB352Du;
+                    v += (int)(GaussianLUT[th & 0xFF] * texSigma / 10.0);
+                }
+                if (v < 0) v = 0;
+                else if (v > 255) v = 255;
+                rowPtr[sx] = MakeGrayPixel((byte)v);
             }
         }
     }
@@ -354,14 +703,20 @@ public class SimulationCanvas : FrameworkElement
         return (h & 0xFFFFFFu) / (double)0x1000000u;
     }
 
-    private static unsafe void WriteMaxPixel(uint* pixel, int newVal)
+    /// <summary>Additive blend (saturating at 255). Treats existing brightness
+    /// below background (pad recess) as 0 contribution — blob reflection
+    /// overrides the pad floor. Two overlapping balls' rim contributions sum,
+    /// producing a bright cusp/lens band wherever the donuts overlap.</summary>
+    private static unsafe void WriteAdditivePixel(uint* pixel, int newVal, byte bg)
     {
-        if (newVal <= 0) return;
-        if (newVal > 255) newVal = 255;
+        if (newVal <= bg) return;
         uint existing = *pixel;
-        byte existingV = (byte)(existing & 0xFF);
-        if (newVal > existingV)
-            *pixel = MakeGrayPixel((byte)newVal);
+        int existingV = (int)(existing & 0xFFu);
+        int existingBoost = existingV - bg;
+        if (existingBoost < 0) existingBoost = 0;
+        int combined = bg + existingBoost + (newVal - bg);
+        if (combined > 255) combined = 255;
+        *pixel = MakeGrayPixel((byte)combined);
     }
 
     private static uint MakeGrayPixel(byte v)
@@ -418,13 +773,34 @@ public class SimulationCanvas : FrameworkElement
 
     private void OnMouseMove(object sender, MouseEventArgs e)
     {
-        if (!_isPanning || _transform == null) return;
         var pos = e.GetPosition(this);
-        _transform.PanX += pos.X - _lastMousePos.X;
-        _transform.PanY += pos.Y - _lastMousePos.Y;
-        _lastMousePos = pos;
-        _pixelBitmap = null;
-        RenderAll();
+        if (_isPanning && _transform != null)
+        {
+            _transform.PanX += pos.X - _lastMousePos.X;
+            _transform.PanY += pos.Y - _lastMousePos.Y;
+            _lastMousePos = pos;
+            _pixelBitmap = null;
+            RenderAll();
+        }
+        UpdateHoverValue(pos);
+    }
+
+    private void OnMouseLeave(object sender, MouseEventArgs e) => HoverValue = null;
+
+    private unsafe void UpdateHoverValue(Point pos)
+    {
+        var bmp = _pixelBitmap;
+        if (bmp == null) { HoverValue = null; return; }
+        int x = (int)pos.X;
+        int y = (int)pos.Y;
+        if ((uint)x >= (uint)bmp.PixelWidth || (uint)y >= (uint)bmp.PixelHeight)
+        {
+            HoverValue = null;
+            return;
+        }
+        // BGRA32, grayscale (B=G=R): read B byte. BackBuffer is readable outside Lock.
+        byte* p = (byte*)bmp.BackBuffer + y * bmp.BackBufferStride + x * 4;
+        HoverValue = p[0];
     }
 
     private void StartPan(Point pos)
