@@ -146,6 +146,9 @@
                             <TextBlock Text="Cycle Time (最新 N)" FontWeight="SemiBold" FontSize="12"/>
                             <TextBlock Text="{Binding CycleTimeTopNDisplay}"
                                        FontSize="18" Foreground="#1565C0" Margin="0,4,0,0"/>
+                            <TextBlock Text="{Binding CycleTimeTopNSampleDisplay}"
+                                       FontSize="11" Foreground="#666" Margin="0,2,0,0"
+                                       ToolTip="目前 Gap 閾值下實際納入平均計算的 Δt 樣本數"/>
                         </StackPanel>
                     </Border>
                     <DataGrid ItemsSource="{Binding TopNSummaryRows}"
@@ -190,6 +193,9 @@
                             <TextBlock Text="Cycle Time (整批)" FontWeight="SemiBold" FontSize="12"/>
                             <TextBlock Text="{Binding CycleTimeOverallDisplay}"
                                        FontSize="18" Foreground="#1565C0" Margin="0,4,0,0"/>
+                            <TextBlock Text="{Binding CycleTimeOverallSampleDisplay}"
+                                       FontSize="11" Foreground="#666" Margin="0,2,0,0"
+                                       ToolTip="目前 Gap 閾值下實際納入平均計算的 Δt 樣本數"/>
                         </StackPanel>
                     </Border>
                     <DataGrid ItemsSource="{Binding LotSummaryRows}"

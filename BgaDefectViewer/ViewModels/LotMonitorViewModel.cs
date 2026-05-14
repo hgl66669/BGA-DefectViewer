@@ -184,35 +184,61 @@ public class LotMonitorViewModel : ViewModelBase
 
     // ── New: Cycle Time ──────────────────────────────────────────────────
 
-    private double? _cycleTimeSeconds;
-    /// <summary>整批 Cycle Time（秒），無有效資料時為 <c>null</c>。</summary>
-    public double? CycleTimeSeconds
+    private CycleTimeResult _cycleTimeOverall = CycleTimeResult.Empty;
+    /// <summary>整批 Cycle Time 結果（平均秒 + 計入樣本數）。</summary>
+    public CycleTimeResult CycleTimeOverall
     {
-        get => _cycleTimeSeconds;
+        get => _cycleTimeOverall;
         private set
         {
-            if (SetProperty(ref _cycleTimeSeconds, value))
+            if (SetProperty(ref _cycleTimeOverall, value))
+            {
                 OnPropertyChanged(nameof(CycleTimeOverallDisplay));
+                OnPropertyChanged(nameof(CycleTimeOverallSampleDisplay));
+                OnPropertyChanged(nameof(CycleTimeSeconds));
+            }
         }
     }
 
-    private double? _topNCycleTimeSeconds;
-    /// <summary>最新 N 片 Cycle Time（秒），未啟用 Top-N 或無資料時為 <c>null</c>。</summary>
-    public double? TopNCycleTimeSeconds
+    private CycleTimeResult _cycleTimeTopN = CycleTimeResult.Empty;
+    /// <summary>最新 N 片 Cycle Time 結果；未啟用 Top-N 時為 Empty。</summary>
+    public CycleTimeResult CycleTimeTopN
     {
-        get => _topNCycleTimeSeconds;
+        get => _cycleTimeTopN;
         private set
         {
-            if (SetProperty(ref _topNCycleTimeSeconds, value))
+            if (SetProperty(ref _cycleTimeTopN, value))
+            {
                 OnPropertyChanged(nameof(CycleTimeTopNDisplay));
+                OnPropertyChanged(nameof(CycleTimeTopNSampleDisplay));
+                OnPropertyChanged(nameof(TopNCycleTimeSeconds));
+            }
         }
     }
+
+    /// <summary>整批 Cycle Time（秒），無資料時為 <c>null</c>。給外部相容性保留。</summary>
+    public double? CycleTimeSeconds => CycleTimeOverall.AverageSeconds;
+
+    /// <summary>最新 N 片 Cycle Time（秒），未啟用 Top-N 或無資料時為 <c>null</c>。</summary>
+    public double? TopNCycleTimeSeconds => CycleTimeTopN.AverageSeconds;
 
     /// <summary>整批 Cycle Time UI 顯示，例如 <c>"31.91s"</c> 或 <c>"—"</c>。</summary>
-    public string CycleTimeOverallDisplay => CycleTimeCalculator.Format(CycleTimeSeconds);
+    public string CycleTimeOverallDisplay => CycleTimeCalculator.Format(CycleTimeOverall.AverageSeconds);
 
     /// <summary>最新 N 片 Cycle Time UI 顯示，例如 <c>"25.50s"</c> 或 <c>"—"</c>。</summary>
-    public string CycleTimeTopNDisplay => CycleTimeCalculator.Format(TopNCycleTimeSeconds);
+    public string CycleTimeTopNDisplay => CycleTimeCalculator.Format(CycleTimeTopN.AverageSeconds);
+
+    /// <summary>整批 Cycle Time 的樣本數標示，例如 <c>"依 8 個間隔平均"</c>；無樣本時為空字串。</summary>
+    public string CycleTimeOverallSampleDisplay =>
+        CycleTimeOverall.SampleCount > 0
+            ? $"依 {CycleTimeOverall.SampleCount} 個間隔平均"
+            : "";
+
+    /// <summary>最新 N 片 Cycle Time 的樣本數標示。</summary>
+    public string CycleTimeTopNSampleDisplay =>
+        CycleTimeTopN.SampleCount > 0
+            ? $"依 {CycleTimeTopN.SampleCount} 個間隔平均"
+            : "";
 
     private bool _cycleTimeStage1Only = true;
     /// <summary>
@@ -403,7 +429,7 @@ public class LotMonitorViewModel : ViewModelBase
 
         // 整批 Cycle Time（永遠重算）— 使用使用者選擇的 Stage1Only 與 MaxGap 選項
         int maxGap = Math.Max(1, CycleTimeMaxGapSeconds);
-        CycleTimeSeconds = CycleTimeCalculator.Calculate(_filteredRows, CycleTimeStage1Only, maxGap);
+        CycleTimeOverall = CycleTimeCalculator.Calculate(_filteredRows, CycleTimeStage1Only, maxGap);
 
         // Top-N summary 與超界提示
         if (TopNEnabled)
@@ -420,13 +446,13 @@ public class LotMonitorViewModel : ViewModelBase
             var slice = TopNFilter.SelectLatestNSubstrates(_filteredRows, n);
             TopNSummaryRows = new ObservableCollection<LotSummaryLine>(
                 LotSummaryCalculator.Calculate(slice, opts).Lines);
-            TopNCycleTimeSeconds = CycleTimeCalculator.Calculate(slice, CycleTimeStage1Only, maxGap);
+            CycleTimeTopN = CycleTimeCalculator.Calculate(slice, CycleTimeStage1Only, maxGap);
         }
         else
         {
             TopNWarning = "";
             TopNSummaryRows = new ObservableCollection<LotSummaryLine>();
-            TopNCycleTimeSeconds = null;
+            CycleTimeTopN = CycleTimeResult.Empty;
         }
     }
 }

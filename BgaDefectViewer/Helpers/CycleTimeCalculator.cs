@@ -3,6 +3,17 @@ using BgaDefectViewer.Models;
 namespace BgaDefectViewer.Helpers;
 
 /// <summary>
+/// <see cref="CycleTimeCalculator.Calculate"/> 的結果。
+/// </summary>
+/// <param name="AverageSeconds">平均 Δt（秒）；沒有合法樣本時為 <c>null</c>。</param>
+/// <param name="SampleCount">通過 gap 閾值並計入平均的 Δt 樣本數。</param>
+public readonly record struct CycleTimeResult(double? AverageSeconds, int SampleCount)
+{
+    public static readonly CycleTimeResult Empty = new(null, 0);
+    public bool HasValue => AverageSeconds.HasValue;
+}
+
+/// <summary>
 /// 計算 Stage=1（首次檢驗）的平均 Cycle Time（秒）。
 /// 邏輯仿 <c>BM_3300SI_Buyofftest.xlsx</c> Sheet3 S73 的 array formula：
 /// <code>
@@ -33,8 +44,8 @@ public static class CycleTimeCalculator
     /// <param name="maxGapSeconds">
     /// 視為「非連續生產」的間隔上限（秒）；超過此值的 Δt 不計入平均，用以排除休息／換批／跨日。
     /// </param>
-    /// <returns>有效平均秒數；無足夠樣本時回傳 <c>null</c>。</returns>
-    public static double? Calculate(
+    /// <returns>包含平均秒數與「實際計入平均的 Δt 樣本數」的結果。</returns>
+    public static CycleTimeResult Calculate(
         IEnumerable<SummaryRow> rows,
         bool stage1Only = true,
         int maxGapSeconds = DefaultMaxGapSeconds)
@@ -47,7 +58,7 @@ public static class CycleTimeCalculator
             .Select(d => d!.Value)
             .ToList();
 
-        if (times.Count < 2) return null;
+        if (times.Count < 2) return CycleTimeResult.Empty;
 
         // 2. 依時間升序排序
         times.Sort();
@@ -64,7 +75,9 @@ public static class CycleTimeCalculator
             count++;
         }
 
-        return count > 0 ? sum / count : null;
+        return count > 0
+            ? new CycleTimeResult(sum / count, count)
+            : CycleTimeResult.Empty;
     }
 
     /// <summary>
