@@ -31,6 +31,10 @@ public static class FileLocator
     /// <summary>UI display prefix for a merged lot.</summary>
     public const string MergedLotDisplayPrefix = "合併 ";
 
+    // ── UMKF auto-merge master constants ───────────────────────────
+    /// <summary>Internal Lot id prefix for a UMKF (PSPREP_/PSPUBL_) auto-merged master batch.</summary>
+    public const string UmkfMasterPrefix = "__umkf__";
+
     /// <summary>Open a file shared with concurrent writers (handles `.~lock` situations).</summary>
     public static FileStream OpenSharedRead(string path) =>
         new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
@@ -497,11 +501,26 @@ public static class FileLocator
         return DateTime.TryParseExact(s, "yyyyMMddHHmmss", CultureInfo.InvariantCulture, DateTimeStyles.None, out timestamp);
     }
 
-    /// <summary>UI display name for a lot id (decodes virtual day lots and merged lots).</summary>
+    /// <summary>Encode a UMKF auto-merged master lot id by wrapping the chosen master batch name.</summary>
+    public static string EncodeUmkfMaster(string masterName) =>
+        UmkfMasterPrefix + masterName;
+
+    /// <summary>Decode a UMKF master id back to its master batch name. Returns false for non-UMKF ids.</summary>
+    public static bool TryDecodeUmkfMaster(string lot, out string masterName)
+    {
+        masterName = "";
+        if (string.IsNullOrEmpty(lot) || !lot.StartsWith(UmkfMasterPrefix, StringComparison.Ordinal)) return false;
+        masterName = lot.Substring(UmkfMasterPrefix.Length);
+        return masterName.Length > 0;
+    }
+
+    /// <summary>UI display name for a lot id (decodes virtual day lots, merged lots, and UMKF masters).</summary>
     public static string FormatLotForDisplay(string lot)
     {
         if (TryDecodeMergedLot(lot, out var ts))
             return MergedLotDisplayPrefix + ts.ToString("yyyy-MM-dd HH:mm");
+        if (TryDecodeUmkfMaster(lot, out var master))
+            return master;
         if (TryDecodeVirtualDayLot(lot, out var d))
             return d.ToString("yyyy-MM-dd") + VirtualDayLotDisplaySuffix;
         return lot;
@@ -553,8 +572,10 @@ public static class FileLocator
     /// </summary>
     public static List<string> ResolveLotFolders(string athSysPath, string partNo, string lot)
     {
-        // Session-only merged lots have no physical folders on disk.
+        // Session-only merged lots / UMKF masters have no single physical folder on disk —
+        // their constituent child lots resolve individually inside BuildMergedSession.
         if (TryDecodeMergedLot(lot, out _)) return new();
+        if (TryDecodeUmkfMaster(lot, out _)) return new();
 
         var partDir = GetPartResultsDir(athSysPath, partNo);
         if (!Directory.Exists(partDir)) return new();
@@ -814,6 +835,151 @@ public static class FileLocator
         }
 
         return realLots.Count + dayLotDates.Count;
+    }
+
+    /// <summary>
+    /// 從指定 Lot 的 <c>.summary.csv</c> 內容取得 (基板數, 首次檢驗日期)。
+    /// 比起 <see cref="EnumerateSubstratesForLot"/> 數實體 .afa 檔，這個方法直接讀 CSV 的 Name 欄位
+    /// 去重 — 對「只有 .summary.csv 沒有對應 .afa」的 legacy lot 能正確回報基板數。
+    /// 日期取「LOT Start」section 第一個 row 的 Date/Time 欄位（比 folder mtime 更貼近實際生產時間）。
+    /// <para>
+    /// 處理三種情境：
+    /// <list type="bullet">
+    /// <item>合併批：(0, 解碼出的 timestamp)。基板數由 <c>MergedLotData</c> 自帶。</item>
+    /// <item>虛擬日批：rolling CSV 配合日期過濾。</item>
+    /// <item>一般批：對應的 .summary.csv 直接 stream count。</item>
+    /// </list>
+    /// </para>
+    /// </summary>
+    public static (int Count, DateTime? FirstDate) GetLotInfo(
+        string athSysPath, string partNo, string lot)
+    {
+        // 合併批：count 由 VM 帶入；date 從 id 解碼
+        if (TryDecodeMergedLot(lot, out var mts)) return (0, mts);
+
+        var chk = FindSummaryCsv(athSysPath, partNo, lot);
+        if (!chk.Found) return (0, null);
+
+        DateTime? dateFilter = TryDecodeVirtualDayLot(lot, out var dDate) ? dDate : null;
+
+        return StreamSummaryInfo(chk.ActualPath!, dateFilter);
+    }
+
+    /// <summary>
+    /// Stream a <c>.summary.csv</c> file once: count distinct Name in the latest <c>LOT Start</c>
+    /// section, and capture the earliest Date/Time. Mirrors <see cref="Parsers.SummaryCsvParser.ParseFirstLot"/>
+    /// section-reset semantics (each new LOT Start clears the accumulator).
+    /// </summary>
+    private static (int Count, DateTime? FirstDate) StreamSummaryInfo(string path, DateTime? dateFilter)
+    {
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        DateTime? firstDate = null;
+        bool inSection = false;
+        int sections = 0;
+
+        try
+        {
+            using var fs = OpenSharedRead(path);
+            using var sr = new StreamReader(fs, detectEncodingFromByteOrderMarks: true);
+            string? line;
+            while ((line = sr.ReadLine()) != null)
+            {
+                var t = line.Trim();
+                if (t.Length == 0) continue;
+
+                if (t.StartsWith("LOT Start", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (sections > 0) { names.Clear(); firstDate = null; }
+                    sections++;
+                    inSection = true;
+                    continue;
+                }
+                if (t.StartsWith("LOT Summary End", StringComparison.OrdinalIgnoreCase)) { inSection = false; continue; }
+                if (t.StartsWith("LOT Summary", StringComparison.OrdinalIgnoreCase)) { inSection = false; continue; }
+                if (!inSection) continue;
+                if (t.StartsWith("Name,", StringComparison.OrdinalIgnoreCase) ||
+                    t.StartsWith("Name\t", StringComparison.OrdinalIgnoreCase)) continue;
+
+                var parts = t.Split(',');
+                if (parts.Length < 17) continue;
+                if (!int.TryParse(parts[1].Trim(), out _)) continue;  // OK 欄要是數字
+
+                // 虛擬日批 date filter
+                if (dateFilter.HasValue)
+                {
+                    if (!RowDateParser.TryParse(parts[16], out var rowDate)
+                        || rowDate.Date != dateFilter.Value.Date) continue;
+                }
+
+                names.Add(parts[0].Trim());
+
+                if (firstDate == null && RowDateParser.TryParse(parts[16], out var dt))
+                    firstDate = dt;
+            }
+        }
+        catch
+        {
+            // 部分讀取失敗 → 回傳目前累計
+        }
+
+        // 虛擬日批：date 取查詢的日期，讓 UI 顯示一致
+        if (dateFilter.HasValue) firstDate = dateFilter.Value;
+
+        return (names.Count, firstDate);
+    }
+
+    /// <summary>
+    /// 取得指定 Part 下所有 lot 的代表性 mtime（每個 lot 取其下資料夾的最新 LastWriteTime）。
+    /// 給 Lot# dropdown 的日期分組標頭使用。一次 <c>Directory.GetDirectories</c> 取得，
+    /// 避免每個 lot 各自呼叫產生 N×N 的列舉。
+    /// </summary>
+    public static Dictionary<string, DateTime> GetLotTimestamps(string athSysPath, string partNo)
+    {
+        var partDir = GetPartResultsDir(athSysPath, partNo);
+        var result = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        if (!Directory.Exists(partDir)) return result;
+
+        var dayMaxTime = new Dictionary<DateTime, DateTime>();
+
+        try
+        {
+            foreach (var sub in Directory.GetDirectories(partDir))
+            {
+                var name = Path.GetFileName(sub)!;
+                DateTime folderTime;
+                try { folderTime = new DirectoryInfo(sub).LastWriteTime; }
+                catch { continue; }
+
+                if (TryParseTimestampFolderName(name, out var ts))
+                {
+                    var lotNo = PeekLotNoFromFolder(sub);
+                    if (string.IsNullOrEmpty(lotNo))
+                    {
+                        if (!dayMaxTime.TryGetValue(ts.Date, out var prev) || folderTime > prev)
+                            dayMaxTime[ts.Date] = folderTime;
+                    }
+                    else
+                    {
+                        if (!result.TryGetValue(lotNo, out var prev) || folderTime > prev)
+                            result[lotNo] = folderTime;
+                    }
+                }
+                else
+                {
+                    if (!result.TryGetValue(name, out var prev) || folderTime > prev)
+                        result[name] = folderTime;
+                }
+            }
+        }
+        catch
+        {
+            // 列舉失敗時回傳目前累計
+        }
+
+        foreach (var kv in dayMaxTime)
+            result[EncodeVirtualDayLot(kv.Key)] = kv.Value;
+
+        return result;
     }
 
     /// <summary>

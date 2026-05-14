@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Windows;
 using BgaDefectViewer.Helpers;
+using BgaDefectViewer.Models;
 
 namespace BgaDefectViewer.Views;
 
@@ -26,16 +27,21 @@ public partial class LotMergeDialog : Window
     public IReadOnlyList<string> SelectedLotIds =>
         Items.Where(i => i.IsSelected).Select(i => i.LotId).ToList();
 
-    public LotMergeDialog(IEnumerable<string> availableLotIds)
+    /// <summary>
+    /// Build the picker from the live LotNumbers items. UMKF masters (<c>__umkf__</c>) are
+    /// shown using <c>LotListItem.DisplayName</c> so users see <c>"ABC123 (3 子批 / 56 片)"</c>
+    /// rather than the synthetic id. Session-only manual merged lots (<c>__merged__</c>) are
+    /// excluded to avoid merging-of-merges confusion.
+    /// </summary>
+    public LotMergeDialog(IEnumerable<LotListItem> availableLots)
     {
         InitializeComponent();
         DataContext = this;
 
-        foreach (var id in availableLotIds)
+        foreach (var lot in availableLots)
         {
-            // Exclude already-merged session lots from the picker — merging merges is confusing.
-            if (id.StartsWith(FileLocator.MergedLotPrefix, StringComparison.Ordinal)) continue;
-            var pick = new LotPick { LotId = id, DisplayName = FileLocator.FormatLotForDisplay(id) };
+            if (lot.Id.StartsWith(FileLocator.MergedLotPrefix, StringComparison.Ordinal)) continue;
+            var pick = new LotPick { LotId = lot.Id, DisplayName = lot.DisplayName };
             pick.PropertyChanged += OnPickChanged;
             Items.Add(pick);
         }

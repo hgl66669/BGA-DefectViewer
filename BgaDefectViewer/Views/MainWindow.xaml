@@ -4,11 +4,30 @@
         xmlns:vm="clr-namespace:BgaDefectViewer.ViewModels"
         xmlns:views="clr-namespace:BgaDefectViewer.Views"
         xmlns:simviews="clr-namespace:BgaDefectViewer.Simulation.Views"
+        xmlns:cm="clr-namespace:System.ComponentModel;assembly=WindowsBase"
+        xmlns:sys="clr-namespace:System;assembly=mscorlib"
         Title="BGA Defect Viewer" Width="1280" Height="800"
         WindowStartupLocation="CenterScreen">
     <Window.DataContext>
         <vm:MainViewModel/>
     </Window.DataContext>
+    <Window.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <!-- Lot# dropdown 依日期分組視圖：LotNumbers 已預先按 (CreatedAt.Date desc, secondary)
+             排序，所以 PropertyGroupDescription 會把同日期的連續項聚成一個 group，
+             新日期排在最上面。GroupStyle 用灰字標示日期作為小標題。
+             <para>IsLiveGroupingRequested=True：當背景把 LotListItem.CreatedAt 從 null（或
+             folder mtime）更新到 CSV-based date 時，view 會自動把 item 移到正確的 group。</para> -->
+        <CollectionViewSource x:Key="LotsGroupedView" Source="{Binding LotNumbers}"
+                              IsLiveGroupingRequested="True">
+            <CollectionViewSource.LiveGroupingProperties>
+                <sys:String>DateGroupKey</sys:String>
+            </CollectionViewSource.LiveGroupingProperties>
+            <CollectionViewSource.GroupDescriptions>
+                <PropertyGroupDescription PropertyName="DateGroupKey"/>
+            </CollectionViewSource.GroupDescriptions>
+        </CollectionViewSource>
+    </Window.Resources>
     <DockPanel>
         <!-- Config Bar -->
         <Grid DockPanel.Dock="Top" Margin="4">
@@ -22,6 +41,9 @@
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="160"/>
                 <ColumnDefinition Width="120"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <TextBlock Grid.Column="0" Text="Source:" VerticalAlignment="Center" Margin="4,0"/>
@@ -40,10 +62,23 @@
                       ToolTip="Part# 排序方式"
                       VerticalAlignment="Center" Margin="4,0,0,0"/>
             <TextBlock Grid.Column="6" Text="Lot#:" VerticalAlignment="Center" Margin="12,0,4,0"/>
-            <ComboBox Grid.Column="7" ItemsSource="{Binding LotNumbers}"
+            <ComboBox Grid.Column="7"
+                      ItemsSource="{Binding Source={StaticResource LotsGroupedView}}"
                       DisplayMemberPath="DisplayName" SelectedValuePath="Id"
                       SelectedValue="{Binding SelectedLotNumber}" VerticalAlignment="Center"
-                      ToolTip="批號 (該批基板數會於背景載入)"/>
+                      ToolTip="批號 (依日期分組；該批基板數會於背景載入)">
+                <ComboBox.GroupStyle>
+                    <GroupStyle>
+                        <GroupStyle.HeaderTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Name}"
+                                           Foreground="#999" FontSize="11"
+                                           Padding="6,4,6,2"/>
+                            </DataTemplate>
+                        </GroupStyle.HeaderTemplate>
+                    </GroupStyle>
+                </ComboBox.GroupStyle>
+            </ComboBox>
             <ComboBox Grid.Column="8" ItemsSource="{Binding SortOptions}"
                       DisplayMemberPath="Display" SelectedValuePath="Mode"
                       SelectedValue="{Binding LotSortMode}"
@@ -52,6 +87,43 @@
             <Button Grid.Column="9" Content="Reload" Command="{Binding ReloadLotCommand}"
                     ToolTip="Re-read all files for the current Part# / Lot#"
                     VerticalAlignment="Center" Margin="4,0" Padding="8,2"/>
+
+            <!-- UMKF auto-merge controls: visible only when the current Part# is UMKF-eligible
+                 (PSPREP_/PSPUBL_ prefix + 第6碼變動規律). Both CheckBoxes are auto-toggled on
+                 part-number change; user can override per-Part#. -->
+            <CheckBox Grid.Column="10" Content="UMKF合併"
+                      IsChecked="{Binding IsUmkfMergeEnabled}"
+                      Visibility="{Binding IsUmkfModeAvailable, Converter={StaticResource BoolToVis}}"
+                      VerticalAlignment="Center" Margin="12,0,4,0">
+                <CheckBox.ToolTip>
+                    <TextBlock>
+                        <Run FontWeight="Bold" Text="UMKF 特殊規則"/><LineBreak/>
+                        <Run Text="自動偵測：選擇的料號為 PSPREP_ / PSPUBL_ 開頭，"/><LineBreak/>
+                        <Run Text="且底下批號符合第 6 碼變動規律時自動勾選。"/><LineBreak/>
+                        <Run Text="勾選後：同系列子批合併成單一母批顯示，"/><LineBreak/>
+                        <Run Text="點選即載入全部子批的合併資料"/><LineBreak/>
+                        <Run Text="(與「合併批號」、匯出報表、特殊統計相容)。"/>
+                    </TextBlock>
+                </CheckBox.ToolTip>
+            </CheckBox>
+            <CheckBox Grid.Column="11" Content="含 -R 補批"
+                      IsChecked="{Binding IncludeRBatches}"
+                      IsEnabled="{Binding IsUmkfMergeEnabled}"
+                      Visibility="{Binding IsUmkfModeAvailable, Converter={StaticResource BoolToVis}}"
+                      VerticalAlignment="Center" Margin="4,0">
+                <CheckBox.ToolTip>
+                    <TextBlock>
+                        <Run Text="是否將 -R 結尾的補批納入 UMKF 合併。"/><LineBreak/>
+                        <Run Text="取消勾選：-R 子批排除於分組之外，"/><LineBreak/>
+                        <Run Text="不會出現在下拉清單中。"/>
+                    </TextBlock>
+                </CheckBox.ToolTip>
+            </CheckBox>
+            <TextBlock Grid.Column="12" Text="{Binding UmkfStatusText}"
+                       Foreground="#0066CC" FontSize="11" VerticalAlignment="Center"
+                       Margin="6,0,4,0"
+                       Visibility="{Binding IsUmkfModeAvailable, Converter={StaticResource BoolToVis}}"
+                       ToolTip="UMKF 合併後的批號精簡比例 (原始→母批)"/>
         </Grid>
 
         <!-- Status Bar -->
