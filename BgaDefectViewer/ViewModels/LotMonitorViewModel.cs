@@ -10,12 +10,15 @@ public class LotMonitorViewModel : ViewModelBase
     // ── Source-of-truth snapshot from the last Load() ────────────────────
     private LotSession? _currentSession;
     private List<SummaryRow> _allRows = new();
+    /// <summary>After applying <see cref="ActiveMountFilter"/>; drives Rows + summaries.</summary>
+    private List<SummaryRow> _filteredRows = new();
 
     public LotMonitorViewModel()
     {
         MergeLotsCommand = new RelayCommand(
             _ => MergeLotsRequested?.Invoke(),
             _ => CanMergeLots);
+        MountFilterCommand = new RelayCommand(_ => MountFilterRequested?.Invoke());
     }
 
     // ── Existing observable state ────────────────────────────────────────
@@ -179,6 +182,57 @@ public class LotMonitorViewModel : ViewModelBase
         private set => SetProperty(ref _topNWarning, value);
     }
 
+    // ── New: Cycle Time ──────────────────────────────────────────────────
+
+    private double? _cycleTimeSeconds;
+    /// <summary>整批 Cycle Time（秒），無有效資料時為 <c>null</c>。</summary>
+    public double? CycleTimeSeconds
+    {
+        get => _cycleTimeSeconds;
+        private set
+        {
+            if (SetProperty(ref _cycleTimeSeconds, value))
+                OnPropertyChanged(nameof(CycleTimeOverallDisplay));
+        }
+    }
+
+    private double? _topNCycleTimeSeconds;
+    /// <summary>最新 N 片 Cycle Time（秒），未啟用 Top-N 或無資料時為 <c>null</c>。</summary>
+    public double? TopNCycleTimeSeconds
+    {
+        get => _topNCycleTimeSeconds;
+        private set
+        {
+            if (SetProperty(ref _topNCycleTimeSeconds, value))
+                OnPropertyChanged(nameof(CycleTimeTopNDisplay));
+        }
+    }
+
+    /// <summary>整批 Cycle Time UI 顯示，例如 <c>"31.91s"</c> 或 <c>"—"</c>。</summary>
+    public string CycleTimeOverallDisplay => CycleTimeCalculator.Format(CycleTimeSeconds);
+
+    /// <summary>最新 N 片 Cycle Time UI 顯示，例如 <c>"25.50s"</c> 或 <c>"—"</c>。</summary>
+    public string CycleTimeTopNDisplay => CycleTimeCalculator.Format(TopNCycleTimeSeconds);
+
+    private bool _cycleTimeStage1Only = true;
+    /// <summary>
+    /// <c>true</c>（預設）= 僅計算 Stage=1 row 的 cycle time（實際生產節拍）；
+    /// <c>false</c> = 包含所有 row（含 Stage&gt;1 的修補後重檢）。
+    /// </summary>
+    public bool CycleTimeStage1Only
+    {
+        get => _cycleTimeStage1Only;
+        set { if (SetProperty(ref _cycleTimeStage1Only, value)) RecalculateSummaries(); }
+    }
+
+    private int _cycleTimeMaxGapSeconds = CycleTimeCalculator.DefaultMaxGapSeconds;
+    /// <summary>視為「非連續生產」的間隔秒數上限；預設 300。</summary>
+    public int CycleTimeMaxGapSeconds
+    {
+        get => _cycleTimeMaxGapSeconds;
+        set { if (SetProperty(ref _cycleTimeMaxGapSeconds, value)) RecalculateSummaries(); }
+    }
+
     /// <summary>Effective DIE/Sub used in recalculation (manual override wins when set).</summary>
     private int DieBaseDieCountEffective
         => DieBaseDieCountIsManual ? DieBaseDieCount : DieBaseDieCountAuto;
@@ -199,6 +253,36 @@ public class LotMonitorViewModel : ViewModelBase
                 CommandManager.InvalidateRequerySuggested();
         }
     }
+
+    // ── New: 特殊統計規則 (Mount filter) ────────────────────────────────
+
+    public ICommand MountFilterCommand { get; }
+    /// <summary>MainViewModel 訂閱以開啟 MountFilterDialog。</summary>
+    public event Action? MountFilterRequested;
+
+    private MountFilter _activeMountFilter = new();
+    /// <summary>當前的 mount 過濾規則。設值後自動重算 (透過 ApplyMountFilter)。</summary>
+    public MountFilter ActiveMountFilter
+    {
+        get => _activeMountFilter;
+        set
+        {
+            if (SetProperty(ref _activeMountFilter, value ?? new MountFilter()))
+            {
+                OnPropertyChanged(nameof(IsMountFilterActive));
+                OnPropertyChanged(nameof(MountFilterButtonText));
+                ApplyMountFilter();
+            }
+        }
+    }
+
+    public bool IsMountFilterActive => ActiveMountFilter.Mode != MountMode.Off;
+
+    /// <summary>按鈕文字：未啟用 = <c>"特殊統計"</c>；啟用 = <c>"特殊統計 [雙植球: M1+M2]"</c>。</summary>
+    public string MountFilterButtonText =>
+        IsMountFilterActive
+            ? $"特殊統計  [{ActiveMountFilter.Describe()}]"
+            : "特殊統計";
 
     // ── Existing events ──────────────────────────────────────────────────
 
@@ -227,18 +311,40 @@ public class LotMonitorViewModel : ViewModelBase
         _allRows = session.Rows.ToList();
 
         LotName = session.LotName;
-        SubstrateCount = session.SubstrateCount;
-        Rows = new ObservableCollection<SummaryRow>(session.Rows);
 
         // Reset DIE/Sub: prefer fresh auto-derivation; drop any prior manual override.
         DieBaseDieCountIsManual = false;
         DieBaseDieCountAuto = DieCountInference.InferDieCountPerSubstrate(_allRows);
         // _dieBaseDieCount mirrors the effective value so the TextBox shows auto by default.
         SetProperty(ref _dieBaseDieCount, DieBaseDieCountAuto, nameof(DieBaseDieCount));
+
+        // ApplyMountFilter() rebuilds _filteredRows / Rows / SubstrateCount / TotalDieCount,
+        // then calls RecalculateSummaries() for the summary block.
+        ApplyMountFilter();
+    }
+
+    /// <summary>
+    /// 套用當前 <see cref="ActiveMountFilter"/> 至 <c>_allRows</c>，更新主 DataGrid (Rows)、
+    /// SubstrateCount，並觸發 summary 重算。
+    /// <para>先呼叫 <see cref="MountFilter.RebuildAssignment"/> 依時間順序計算每個基板的 mount
+    /// 索引，再依 Mount1/2/3Enabled 過濾。這樣即使基板名稱不規則也能正確分組。</para>
+    /// </summary>
+    private void ApplyMountFilter()
+    {
+        // 先依 _allRows 的時間順序 rebuild 一次「基板 → mount」映射
+        ActiveMountFilter.RebuildAssignment(_allRows);
+
+        _filteredRows = ActiveMountFilter.Mode == MountMode.Off
+            ? _allRows.ToList()
+            : _allRows.Where(r => ActiveMountFilter.IsAccepted(r.Name)).ToList();
+
+        Rows = new ObservableCollection<SummaryRow>(_filteredRows);
+        // Count by Name (full unique identifier) so merged-lot substrates aren't collapsed
+        // when their short SubstrateIds collide across source lots (e.g., "Leg1-1" vs "Leg2-1").
+        SubstrateCount = _filteredRows.Select(r => r.Name)
+                                      .Distinct(StringComparer.OrdinalIgnoreCase).Count();
         OnPropertyChanged(nameof(TotalDieCount));
 
-        // RecalculateSummaries() handles IsSummaryCalculated based on current options +
-        // whether session has a CSV-original summary.
         RecalculateSummaries();
     }
 
@@ -252,20 +358,19 @@ public class LotMonitorViewModel : ViewModelBase
     /// <summary>
     /// Bottom summary 與 CSV 原始 LotSummary 等價的條件：
     /// <list type="bullet">
+    /// <item>未啟用 Mount filter（過濾改變了行集合）。</item>
     /// <item>YieldMode 必須是 Default。</item>
-    /// <item>CountETC=true；或 CountETC=false 但資料中沒有任何「ETC 類 only 且 NGDie&gt;0」的 row
-    ///   （此時 toggle 對結果無影響）。</item>
+    /// <item>CountETC=true；或 CountETC=false 但資料中沒有任何「ETC 類 only 且 NGDie&gt;0」的 row。</item>
     /// </list>
-    /// 第二條讓使用者在「批次內無 ETC 類缺陷實際造成 NG die」的情況下，
-    /// 切換 CountETC 不會誤觸發指示燈轉橘色。
     /// </summary>
     private bool BottomMatchesCsv
     {
         get
         {
+            if (IsMountFilterActive) return false;
             if (YieldMode != YieldMode.Default) return false;
             if (CountETC) return true;
-            return !_allRows.Any(LotSummaryCalculator.WouldCountETCAffect);
+            return !_filteredRows.Any(LotSummaryCalculator.WouldCountETCAffect);
         }
     }
 
@@ -292,14 +397,19 @@ public class LotMonitorViewModel : ViewModelBase
         else
         {
             LotSummaryRows = new ObservableCollection<LotSummaryLine>(
-                LotSummaryCalculator.Calculate(_allRows, opts).Lines);
+                LotSummaryCalculator.Calculate(_filteredRows, opts).Lines);
             IsSummaryCalculated = true;
         }
+
+        // 整批 Cycle Time（永遠重算）— 使用使用者選擇的 Stage1Only 與 MaxGap 選項
+        int maxGap = Math.Max(1, CycleTimeMaxGapSeconds);
+        CycleTimeSeconds = CycleTimeCalculator.Calculate(_filteredRows, CycleTimeStage1Only, maxGap);
 
         // Top-N summary 與超界提示
         if (TopNEnabled)
         {
-            int distinct = _allRows.Select(r => r.SubstrateId).Distinct().Count();
+            int distinct = _filteredRows.Select(r => r.Name)
+                                        .Distinct(StringComparer.OrdinalIgnoreCase).Count();
             int upper = Math.Max(1, distinct);
             int n = Math.Max(1, Math.Min(TopN, upper));
 
@@ -307,14 +417,16 @@ public class LotMonitorViewModel : ViewModelBase
                 ? $"超過實際基板數 ({distinct})，已採用 {n} 片"
                 : (TopN <= 0 ? $"N 須 ≥ 1，已採用 {n} 片" : "");
 
-            var slice = TopNFilter.SelectLatestNSubstrates(_allRows, n);
+            var slice = TopNFilter.SelectLatestNSubstrates(_filteredRows, n);
             TopNSummaryRows = new ObservableCollection<LotSummaryLine>(
                 LotSummaryCalculator.Calculate(slice, opts).Lines);
+            TopNCycleTimeSeconds = CycleTimeCalculator.Calculate(slice, CycleTimeStage1Only, maxGap);
         }
         else
         {
             TopNWarning = "";
             TopNSummaryRows = new ObservableCollection<LotSummaryLine>();
+            TopNCycleTimeSeconds = null;
         }
     }
 }

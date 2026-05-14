@@ -134,7 +134,18 @@ public class SubstrateViewerViewModel : ViewModelBase
             return;
         }
 
-        if (!filtered.Any()) return;
+        if (!filtered.Any())
+        {
+            // .afa 檔存在但無檢驗資料：通常代表設備正在寫檔（生產中 Reload 撞到寫入空檔），
+            // 或 .afa 結構異常。明確清空舊資料並標示給使用者，避免顯示前一片基板的殘留。
+            Defects = new ObservableCollection<DefectBall>();
+            DeviceJudge = "(無檢驗資料)";
+            SummaryText = "AFA 已載入但無 INSPECTION 區塊 — 設備可能仍在寫檔，請稍候再 Reload。";
+            _selectedInspection = 0;
+            OnPropertyChanged(nameof(SelectedInspection));
+            RequestRender();
+            return;
+        }
 
         // 重置 backing field，確保即使目標 InspectionNumber 與目前值相同，
         // SetProperty 仍會觸發 OnInspectionChanged（切換不同基板但同 Inspection 號碼時的場景）。

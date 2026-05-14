@@ -1,4 +1,3 @@
-using System.Globalization;
 using BgaDefectViewer.Models;
 
 namespace BgaDefectViewer.Helpers;
@@ -29,7 +28,7 @@ public static class TopNFilter
 
         // 2. 依 (Date/Time desc, RowIndex desc) 排序
         var sorted = firstByName
-            .OrderByDescending(r => TryParseRowDate(r.DateTime, out var d) ? d : DateTime.MinValue)
+            .OrderByDescending(r => RowDateParser.TryParse(r.DateTime, out var d) ? d : DateTime.MinValue)
             .ThenByDescending(r => r.RowIndex)
             .Take(n)
             .Select(r => r.Name)
@@ -37,20 +36,5 @@ public static class TopNFilter
 
         // 3. 回傳這些基板的所有 Stage rows，保留原順序
         return rowList.Where(r => sorted.Contains(r.Name)).ToList();
-    }
-
-    /// <summary>
-    /// 接受 <c>yyyy/MM/dd HH:mm:ss</c>, <c>yyyy/MM/dd HH:mm</c>,
-    /// <c>yyyy/M/d HH:mm:ss</c>, <c>yyyy/M/d HH:mm</c> 等格式
-    /// （與 <see cref="Parsers.SummaryCsvParser"/> 內部解析規則一致）。
-    /// </summary>
-    private static bool TryParseRowDate(string raw, out DateTime date)
-    {
-        date = default;
-        if (string.IsNullOrWhiteSpace(raw)) return false;
-        var s = raw.Trim();
-        string[] formats = { "yyyy/MM/dd HH:mm:ss", "yyyy/MM/dd HH:mm", "yyyy/M/d HH:mm:ss", "yyyy/M/d HH:mm" };
-        return DateTime.TryParseExact(s, formats, CultureInfo.InvariantCulture, DateTimeStyles.None, out date)
-            || DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.None, out date);
     }
 }
