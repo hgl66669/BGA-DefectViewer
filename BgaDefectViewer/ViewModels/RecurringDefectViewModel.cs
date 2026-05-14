@@ -1,10 +1,22 @@
 using System.Collections.ObjectModel;
+using System.Windows.Input;
 using BgaDefectViewer.Controls;
 using BgaDefectViewer.Helpers;
 using BgaDefectViewer.Models;
 using BgaDefectViewer.Parsers;
 
 namespace BgaDefectViewer.ViewModels;
+
+/// <summary>
+/// Which metric drives the die-cell number and colour in the left panel.
+/// </summary>
+public enum DieMetricMode
+{
+    /// <summary>Cell shows max recurring count of any single ball in the die.</summary>
+    Max,
+    /// <summary>Cell shows count of ball positions whose recurrence ≥ threshold.</summary>
+    Count,
+}
 
 // ── Defect-type checkbox item ─────────────────────────────────────────────────
 
@@ -84,6 +96,10 @@ public class RecurringDefectViewModel : ViewModelBase
     private CoordinateTransform? _transform;
     private RecurringDieCell? _selectedDieCell;
 
+    // Cached defect markers from the last filter/selection. Pan/zoom/resize
+    // reuse this list instead of rebuilding the table + LINQ pipeline each frame.
+    private List<DefectBall> _cachedDefects = new();
+
     // ── Header info ───────────────────────────────────────────────────────
     private string _headerText = "No data loaded";
     public string HeaderText
@@ -141,6 +157,37 @@ public class RecurringDefectViewModel : ViewModelBase
         }
     }
 
+    // ── Die metric mode ───────────────────────────────────────────────────
+    private DieMetricMode _dieMetric = DieMetricMode.Max;
+    public DieMetricMode DieMetric
+    {
+        get => _dieMetric;
+        set
+        {
+            if (SetProperty(ref _dieMetric, value))
+            {
+                OnPropertyChanged(nameof(IsDieMetricMax));
+                OnPropertyChanged(nameof(IsDieMetricCount));
+                ApplyFilter();
+            }
+        }
+    }
+
+    public bool IsDieMetricMax
+    {
+        get => _dieMetric == DieMetricMode.Max;
+        set { if (value) DieMetric = DieMetricMode.Max; }
+    }
+    public bool IsDieMetricCount
+    {
+        get => _dieMetric == DieMetricMode.Count;
+        set { if (value) DieMetric = DieMetricMode.Count; }
+    }
+
+    // ── Defect type bulk-toggle commands ──────────────────────────────────
+    public ICommand SelectAllDefectTypesCommand { get; }
+    public ICommand ClearAllDefectTypesCommand { get; }
+
     // ── Constructor ───────────────────────────────────────────────────────
 
     public RecurringDefectViewModel()
@@ -157,13 +204,34 @@ public class RecurringDefectViewModel : ViewModelBase
         };
         foreach (var f in DefectTypeFilters)
             f.PropertyChanged += (_, _) => ApplyFilter();
+
+        SelectAllDefectTypesCommand = new RelayCommand(_ => SetAllDefectTypes(true));
+        ClearAllDefectTypesCommand  = new RelayCommand(_ => SetAllDefectTypes(false));
+    }
+
+    private void SetAllDefectTypes(bool selected)
+    {
+        foreach (var f in DefectTypeFilters)
+            f.IsSelected = selected;
     }
 
     // ── Load ──────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Clear the canvas selection ring (used on Lot switch, Die switch, and
+    /// when the user clicks blank canvas). Safe to call when no selection
+    /// exists — Canvas.HighlightBall(null, ...) handles that gracefully.
+    /// </summary>
+    public void ClearSelection() => Canvas?.HighlightBall(null, _transform);
+
     /// <summary>Called from MainViewModel after .map files are loaded (Phase 1).</summary>
     public void Load(RecurringDefectData? data, MasterBall[]? masterBalls)
     {
+        // Drop the old highlight before we tear down state — a Lot switch
+        // would otherwise leave a stale ring drawn at the previous Lot's
+        // ball coordinates.
+        ClearSelection();
+
         _data = data;
         _masterBalls = masterBalls;
         _selectedDieCell = null;
@@ -202,11 +270,13 @@ public class RecurringDefectViewModel : ViewModelBase
         RequestRender(null);
     }
 
-    /// <summary>Called from MainViewModel after .afa enrichment completes (Phase 2).</summary>
+    /// <summary>Called from MainViewModel after .afa enrichment completes (Phase 2).
+    /// Ball-level data is now available, so we recompute the whole die grid
+    /// (max-ball-recurring semantics) and refresh the selected die's table.</summary>
     public void RefreshBallData()
     {
-        if (_selectedDieCell == null || _data == null) return;
-        ShowDieBalls(_selectedDieCell.Row, _selectedDieCell.Col);
+        if (_data == null) return;
+        ApplyFilter();
     }
 
     // ── Die cell interaction ──────────────────────────────────────────────
@@ -223,6 +293,12 @@ public class RecurringDefectViewModel : ViewModelBase
     private void ShowDieBalls(int row, int col)
     {
         if (_data == null) return;
+
+        // The previous highlight pointed at a ball from the previous die /
+        // previous filter state; clear it before we rebuild the ball list so
+        // the ring doesn't survive into a context where it no longer makes
+        // sense (e.g. the highlighted ball got filtered out).
+        ClearSelection();
 
         var die = _data.Dies[row, col];
         var selectedCodes = GetSelectedDefectCodes();
@@ -273,18 +349,39 @@ public class RecurringDefectViewModel : ViewModelBase
         if (_data == null) return;
 
         var selectedChars = GetSelectedDefectChars();
+        var selectedCodes = GetSelectedDefectCodes();
 
         foreach (var cell in DieGrid)
         {
             if (cell.IsHeader) continue;
-            int effective = _data.Dies[cell.Row, cell.Col].GetCountForChars(selectedChars);
-            cell.DisplayCount = effective >= _filterMinCount ? effective : 0;
+            cell.DisplayCount = ComputeDieDisplayCount(
+                _data.Dies[cell.Row, cell.Col], selectedCodes, selectedChars);
         }
 
         if (_selectedDieCell != null)
             ShowDieBalls(_selectedDieCell.Row, _selectedDieCell.Col);
         else
             RequestRender(null);
+    }
+
+    /// <summary>
+    /// Per-die value shown in the left grid. Dispatch by metric mode:
+    /// - Max:   max ball recurring count in this die under filter; threshold
+    ///          filters the cell (greys out when max &lt; threshold).
+    /// - Count: number of ball positions in this die with recurring ≥ threshold.
+    ///          Threshold defines what "recurring" means; the cell shows
+    ///          the position count directly (no further threshold gate).
+    /// </summary>
+    private int ComputeDieDisplayCount(RecurringDieInfo die,
+                                       ISet<int> selectedCodes,
+                                       ISet<char> selectedChars)
+    {
+        if (_dieMetric == DieMetricMode.Count)
+        {
+            return die.GetRecurringPositionCount(selectedCodes, _filterMinCount);
+        }
+        int max = die.GetMaxBallCountForCodes(selectedCodes, selectedChars);
+        return max >= _filterMinCount ? max : 0;
     }
 
     // ── FIT ───────────────────────────────────────────────────────────────
@@ -295,12 +392,42 @@ public class RecurringDefectViewModel : ViewModelBase
         RequestRenderCurrentSelection();
     }
 
+    /// <summary>
+    /// Double-click on the detail list → center the canvas on this ball and
+    /// zoom so the ball is comfortably visible (~15px radius). Highlight ring
+    /// stays on after the jump until the next selection / blank click.
+    /// Mirrors SubstrateViewerViewModel.JumpToDefect.
+    /// </summary>
+    public void JumpToBall(RecurringBallInfo info)
+    {
+        if (_transform == null || Canvas == null) return;
+
+        double curR = _transform.BallRadiusPixels(info.Diameter);
+        double targetZoom = curR > 0 ? _transform.Zoom * 15.0 / curR : 5.0;
+        _transform.CenterOn(info.X, info.Y, Canvas.ActualWidth, Canvas.ActualHeight, targetZoom);
+
+        // Re-render at the new pan/zoom first (this also resets the pan anchor
+        // so the highlight ring below is drawn at the correct screen position).
+        RequestRenderCurrentSelection();
+
+        // The defect markers on canvas are synthetic DefectBalls created by
+        // RequestRender — find the one matching this RecurringBallInfo by
+        // BallId so the highlight ring lands on the right circle.
+        var match = _cachedDefects.FirstOrDefault(d => d.BallId == info.BallId);
+        if (match != null)
+            Canvas.HighlightBall(match, _transform);
+    }
+
+    /// <summary>
+    /// Lightweight redraw used by pan/zoom/resize. Reuses the cached defect list
+    /// so we don't rebuild the DataGrid items or rerun the filter LINQ pipeline
+    /// (which would tank perf during drag at 60-120 mouse-move events/sec).
+    /// </summary>
     public void RequestRenderCurrentSelection()
     {
-        if (_selectedDieCell != null)
-            ShowDieBalls(_selectedDieCell.Row, _selectedDieCell.Col);
-        else
-            RequestRender(null);
+        if (Canvas == null || _masterBalls == null || _transform == null) return;
+        _transform.SetCanvasSize(Canvas.ActualWidth, Canvas.ActualHeight);
+        Canvas.RenderAll(_masterBalls, _cachedDefects, _transform);
     }
 
     public void RequestRender(List<RecurringBallInfo>? balls)
@@ -321,6 +448,7 @@ public class RecurringDefectViewModel : ViewModelBase
                 Diameter   = b.Diameter
             }).ToList();
 
+        _cachedDefects = defects;
         Canvas.RenderAll(_masterBalls, defects, _transform);
     }
 
@@ -333,6 +461,7 @@ public class RecurringDefectViewModel : ViewModelBase
         int rows = _data.Rows;
         int cols = _data.Cols;
         var selectedChars = GetSelectedDefectChars();
+        var selectedCodes = GetSelectedDefectCodes();
 
         GridColumns = cols + 1;
 
@@ -348,8 +477,8 @@ public class RecurringDefectViewModel : ViewModelBase
             for (int c = 0; c < cols; c++)
             {
                 var cell = new RecurringDieCell(r, c, isHeader: false);
-                int effective = _data.Dies[r, c].GetCountForChars(selectedChars);
-                cell.DisplayCount = effective >= _filterMinCount ? effective : 0;
+                cell.DisplayCount = ComputeDieDisplayCount(
+                    _data.Dies[r, c], selectedCodes, selectedChars);
                 cells.Add(cell);
             }
         }

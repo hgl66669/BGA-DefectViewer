@@ -474,11 +474,32 @@ public class OverlapInspectionViewModel : ViewModelBase
 
     public ICommand ExecuteCommand { get; }
     public ICommand FitViewCommand { get; }
+    public ICommand ResetCommand { get; }
 
     public OverlapInspectionViewModel()
     {
         ExecuteCommand = new RelayCommand(_ => Execute());
         FitViewCommand = new RelayCommand(_ => FitView());
+        ResetCommand   = new RelayCommand(_ => Reset());
+    }
+
+    /// <summary>Clear the current overlap simulation results without touching
+    /// parameters. The user can adjust inputs and run Execute again.</summary>
+    private void Reset()
+    {
+        _hasResult = false;
+        _fovCells.Clear();
+        _overlapRegions.Clear();
+        _duplicates.Clear();
+        _hiddenBallIds.Clear();
+        _visibleBalls = _masterBalls;
+        FovBallCounts = new ObservableCollection<FovBallCount>();
+        BallTotalsText = "";
+        TotalDuplicates = 0;
+        ValidationErrors = "";
+        ResultInfo = "";
+        SummaryText = "Press [Execute] to run overlap simulation";
+        RequestRender();
     }
 
     // ── Public methods ───────────────────────────────────────────────

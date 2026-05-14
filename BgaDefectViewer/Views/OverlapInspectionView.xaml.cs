@@ -11,6 +11,12 @@ public partial class OverlapInspectionView : UserControl
         InitializeComponent();
         DataContextChanged += OnDataContextChanged;
         BallCanvas.SizeChanged += OnCanvasSizeChanged;
+
+        // Share the BallMapCanvas pan-translate with the FOV overlay so the
+        // grid lines slide with the master balls during drag. RenderAll resets
+        // PanTransform to (0,0), at which point both layers re-render at the
+        // new anchor pan — no manual reset needed here.
+        FovOverlay.RenderTransform = BallCanvas.PanTransform;
     }
 
     private void OnDataContextChanged(object sender, DependencyPropertyChangedEventArgs e)
