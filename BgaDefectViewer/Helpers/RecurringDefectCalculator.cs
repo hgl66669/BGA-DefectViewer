@@ -64,6 +64,15 @@ public static class RecurringDefectCalculator
 
     // ── Phase 2 ───────────────────────────────────────────────────────────
 
+    // Extra balls have BallId == -1 (no Master correspondence), so cross-substrate
+    // recurring can't be keyed by BallId. Instead we cluster them within each die
+    // by XY proximity: defects within this tolerance (mm) at the same die position
+    // across different substrates are treated as the same recurring position.
+    private const double ExtraClusterToleranceMm = 0.15;
+
+    // Synthetic BallId code for Extra clusters: 4 = Extra in DefectTypes.
+    private const int ExtraDefectCode = 4;
+
     /// <summary>
     /// Enrich existing RecurringDefectData with ball-level counts from AFA files.
     /// Safe to call from a background thread; does not touch the UI.
@@ -76,6 +85,9 @@ public static class RecurringDefectCalculator
 
         // Key: (row, col, ballId) → (count, defectCode → occurrences)
         var ballCounts = new Dictionary<(int, int, int), BallAccumulator>();
+
+        // Extras collected per die for cross-substrate clustering after the loop.
+        var extrasByDie = new Dictionary<(int, int), List<DefectBall>>();
 
         foreach (var afa in afaFiles)
         {
@@ -94,7 +106,17 @@ public static class RecurringDefectCalculator
 
                 foreach (var ball in result.Defects)
                 {
-                    if (ball.BallId == -1) continue; // skip Extra balls
+                    if (ball.BallId == -1)
+                    {
+                        // Extra: defer to clustering pass (no Master BallId to group by).
+                        if (!extrasByDie.TryGetValue((dieRow, dieCol), out var list))
+                        {
+                            list = new List<DefectBall>();
+                            extrasByDie[(dieRow, dieCol)] = list;
+                        }
+                        list.Add(ball);
+                        continue;
+                    }
 
                     var key = (dieRow, dieCol, ball.BallId);
                     if (!ballCounts.TryGetValue(key, out var acc))
@@ -106,6 +128,27 @@ public static class RecurringDefectCalculator
                     acc.DefectCodeCounts[ball.DefectCode] =
                         acc.DefectCodeCounts.GetValueOrDefault(ball.DefectCode) + 1;
                 }
+            }
+        }
+
+        // Cluster Extras per die and inject each cluster as a synthetic ball.
+        // Synthetic BallIds start at -1000 and decrement so they don't collide
+        // with the existing -1 sentinel and remain visually identifiable in the
+        // detail table.
+        int nextExtraId = -1000;
+        foreach (var ((dr, dc), extras) in extrasByDie)
+        {
+            foreach (var cluster in ClusterExtras(extras, ExtraClusterToleranceMm))
+            {
+                var acc = new BallAccumulator
+                {
+                    X = cluster.AverageX,
+                    Y = cluster.AverageY,
+                    Diameter = cluster.AverageDiameter,
+                    Count = cluster.Count,
+                };
+                acc.DefectCodeCounts[ExtraDefectCode] = cluster.Count;
+                ballCounts[(dr, dc, nextExtraId--)] = acc;
             }
         }
 
@@ -166,5 +209,58 @@ public static class RecurringDefectCalculator
         public double Diameter;
         public int Count;
         public Dictionary<int, int> DefectCodeCounts = new();
+    }
+
+    /// <summary>
+    /// Greedy proximity-based clustering of Extra defects. Each incoming point
+    /// joins the nearest existing cluster within <paramref name="tolerance"/>
+    /// (centroid distance), otherwise starts a new cluster. Order-dependent but
+    /// adequate for the typical handful of Extras per die.
+    /// </summary>
+    private static List<ExtraCluster> ClusterExtras(List<DefectBall> extras, double tolerance)
+    {
+        var clusters = new List<ExtraCluster>();
+        double t2 = tolerance * tolerance;
+        foreach (var ex in extras)
+        {
+            ExtraCluster? best = null;
+            double bestD2 = t2;
+            foreach (var c in clusters)
+            {
+                double dx = ex.X - c.AverageX;
+                double dy = ex.Y - c.AverageY;
+                double d2 = dx * dx + dy * dy;
+                if (d2 < bestD2) { bestD2 = d2; best = c; }
+            }
+            if (best == null)
+            {
+                var nc = new ExtraCluster();
+                nc.Add(ex);
+                clusters.Add(nc);
+            }
+            else
+            {
+                best.Add(ex);
+            }
+        }
+        return clusters;
+    }
+
+    private class ExtraCluster
+    {
+        private double _sumX, _sumY, _sumDia;
+        public int Count { get; private set; }
+
+        public double AverageX => Count > 0 ? _sumX / Count : 0;
+        public double AverageY => Count > 0 ? _sumY / Count : 0;
+        public double AverageDiameter => Count > 0 ? _sumDia / Count : 0;
+
+        public void Add(DefectBall b)
+        {
+            _sumX += b.X;
+            _sumY += b.Y;
+            _sumDia += b.Diameter;
+            Count++;
+        }
     }
 }

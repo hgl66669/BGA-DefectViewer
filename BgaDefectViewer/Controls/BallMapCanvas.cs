@@ -22,9 +22,28 @@ public class BallMapCanvas : FrameworkElement
     private readonly DrawingVisual _stampVisual;      // Probe-mode text stamps
     private readonly DrawingVisual _hoverVisual;     // Hover highlight + tooltip (topmost)
 
+    // Pan-only translate: during drag we shift data-anchored visuals via this single
+    // shared transform instead of re-rasterising 94k+ master balls each mouse-move.
+    // At drag end (or any RenderAll), the new PanX/Y becomes the anchor and translate
+    // resets to (0,0) so the visuals re-render fresh.
+    private readonly TranslateTransform _panTransform = new(0, 0);
+    private double _anchorPanX;
+    private double _anchorPanY;
+
+    /// <summary>
+    /// Public handle to the shared pan-translate so sibling overlays (e.g. the
+    /// FOV grid in Overlap Inspection) can hook into it as their RenderTransform
+    /// and slide with the master balls during drag without their own re-render.
+    /// </summary>
+    public TranslateTransform PanTransform => _panTransform;
+
     private WriteableBitmap? _okBitmap;
     private bool _pixelModeActive;
     private Size _lastBackgroundSize = Size.Empty;
+
+    // Cached frozen brushes for defect rendering, keyed by DefectCode.
+    // Avoids new SolidColorBrush+Freeze per defect per frame.
+    private readonly Dictionary<int, SolidColorBrush> _defectBrushCache = new();
 
     // Tracks pixels painted last render so we can erase only those (O(N_balls) not O(w*h))
     private readonly List<(int px, int py)> _lastBallPixels = new();
@@ -74,6 +93,16 @@ public class BallMapCanvas : FrameworkElement
         _visuals.Add(_stampVisual);
         _visuals.Add(_hoverVisual);
 
+        // Data-anchored layers share one TranslateTransform so a pan-drag can
+        // shift them with a single property write. The background covers the full
+        // canvas (no transform) and the hover visual follows the mouse (also none).
+        _bitmapVisual.Transform = _panTransform;
+        _defectVisual.Transform = _panTransform;
+        _selectionVisual.Transform = _panTransform;
+        _dimensionVisual.Transform = _panTransform;
+        _measureVisual.Transform = _panTransform;
+        _stampVisual.Transform = _panTransform;
+
         ClipToBounds = true;
 
         MouseWheel += OnMouseWheel;
@@ -113,6 +142,13 @@ public class BallMapCanvas : FrameworkElement
         if (transform != null) _transform = transform;
 
         if (_masterBalls == null || _defects == null || _transform == null) return;
+
+        // Re-anchor: current PanX/Y becomes the rendered position; translate goes to zero.
+        // Subsequent drag motion adjusts _panTransform relative to this anchor.
+        _anchorPanX = _transform.PanX;
+        _anchorPanY = _transform.PanY;
+        _panTransform.X = 0;
+        _panTransform.Y = 0;
 
         RenderBackground();
         RenderOkBalls(_masterBalls, _defects, _transform);
@@ -190,6 +226,9 @@ public class BallMapCanvas : FrameworkElement
         foreach (var (lpx, lpy) in _lastBallPixels)
             *((uint*)(pBackBuffer + lpy * stride + lpx * 4)) = 0u;
         _lastBallPixels.Clear();
+        // Pre-size to avoid List re-allocation as we push ~94k entries below.
+        if (_lastBallPixels.Capacity < masters.Length)
+            _lastBallPixels.Capacity = masters.Length;
 
         // BGRA32 little-endian: (A<<24)|(R<<16)|(G<<8)|B
         const uint grayPixel = 0xFFC0C0C0u; // opaque mid-gray
@@ -224,10 +263,13 @@ public class BallMapCanvas : FrameworkElement
 
         using var dc = _bitmapVisual.RenderOpen();
 
+        // Generous over-draw so translate-pan can shift the rendered area without
+        // exposing missing balls at the edges before the drag-end re-render.
+        const double cullMargin = 250.0;
         foreach (var ball in masters)
         {
             var (px, py) = transform.DataToScreen(ball.X, ball.Y);
-            if (px < -50 || px > w + 50 || py < -50 || py > h + 50) continue;
+            if (px < -cullMargin || px > w + cullMargin || py < -cullMargin || py > h + cullMargin) continue;
 
             // Master dot: solid, slightly smaller than defect circle so it peeks out
             double r = Math.Max(2.0, transform.BallRadiusPixels(ball.Diameter) * 0.55);
@@ -240,9 +282,13 @@ public class BallMapCanvas : FrameworkElement
         using var dc = _defectVisual.RenderOpen();
         foreach (var defect in defects)
         {
-            var color = DefectTypes.GetCanvasColor(defect.DefectCode);
-            var brush = new SolidColorBrush(color);
-            brush.Freeze();
+            if (!_defectBrushCache.TryGetValue(defect.DefectCode, out var brush))
+            {
+                var color = DefectTypes.GetCanvasColor(defect.DefectCode);
+                brush = new SolidColorBrush(color);
+                brush.Freeze();
+                _defectBrushCache[defect.DefectCode] = brush;
+            }
             var (px, py) = transform.DataToScreen(defect.X, defect.Y);
             double radius = Math.Max(3, transform.BallRadiusPixels(defect.Diameter));
             dc.DrawEllipse(brush, null, new Point(px, py), radius, radius);
@@ -587,7 +633,9 @@ public class BallMapCanvas : FrameworkElement
             _transform.PanX += pos.X - _lastMousePos.X;
             _transform.PanY += pos.Y - _lastMousePos.Y;
             _lastMousePos = pos;
-            RequestRedraw?.Invoke();
+            UpdatePanTranslate();
+            if (Mode == CanvasInteractionMode.PreciseMeasure)
+                RenderHoverVisual(pos);
             return;
         }
 
@@ -601,13 +649,29 @@ public class BallMapCanvas : FrameworkElement
         _transform.PanX += pos.X - _lastMousePos.X;
         _transform.PanY += pos.Y - _lastMousePos.Y;
         _lastMousePos = pos;
-        RequestRedraw?.Invoke();
+        UpdatePanTranslate();
+    }
+
+    /// <summary>
+    /// Shift data-anchored visuals to reflect PanX/Y without re-rasterising.
+    /// Cheap path used during drag (~free vs 94K DrawEllipse / WriteableBitmap upload).
+    /// </summary>
+    private void UpdatePanTranslate()
+    {
+        if (_transform == null) return;
+        _panTransform.X = _transform.PanX - _anchorPanX;
+        _panTransform.Y = _transform.PanY - _anchorPanY;
     }
 
     private void OnMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
+        if (!_isDragging) return;
         _isDragging = false;
         ReleaseMouseCapture();
+        // Bake the dragged pan into the visual content: re-renders at the new PanX/Y,
+        // resets _panTransform to (0,0), and refills any edges that drifted outside
+        // the over-draw margin during the drag.
+        RequestRedraw?.Invoke();
     }
 
     private void OnMouseDown(object sender, MouseButtonEventArgs e)
@@ -628,6 +692,8 @@ public class BallMapCanvas : FrameworkElement
             _isMiddleDragging = false;
             ReleaseMouseCapture();
             e.Handled = true;
+            // Same as left-drag end: bake pan into visual content.
+            RequestRedraw?.Invoke();
         }
     }
 

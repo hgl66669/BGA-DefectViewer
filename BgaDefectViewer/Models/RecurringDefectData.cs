@@ -49,6 +49,58 @@ public class RecurringDieInfo
     public int GetCountForChars(ISet<char> chars)
         => chars.Count == 0 ? 0
            : DefectCounts.Where(kv => chars.Contains(kv.Key)).Sum(kv => kv.Value);
+
+    /// <summary>
+    /// Max recurring count of any single ball position within this die, filtered
+    /// to the selected defect codes. This is the proper "recurring" semantic —
+    /// answers "how many substrates did the worst-repeating ball appear in?"
+    ///
+    /// Phase 2 (Balls populated): max over Balls of GetCountForCodes(codes).
+    /// Phase 1 fallback (no ball data): max per-type substrate count under
+    /// <paramref name="charsFallback"/>; this is an upper bound, but uses MAX
+    /// rather than SUM so the colour/value is in the same conceptual range as
+    /// the Phase 2 result (avoids a visible jump when ball data finishes loading).
+    /// </summary>
+    public int GetMaxBallCountForCodes(ISet<int> codes, ISet<char> charsFallback)
+    {
+        if (Balls.Count > 0)
+        {
+            if (codes.Count == 0) return 0;
+            int max = 0;
+            foreach (var b in Balls)
+            {
+                int c = b.GetCountForCodes(codes);
+                if (c > max) max = c;
+            }
+            return max;
+        }
+        if (charsFallback.Count == 0) return 0;
+        int dmax = 0;
+        foreach (var kv in DefectCounts)
+            if (charsFallback.Contains(kv.Key) && kv.Value > dmax) dmax = kv.Value;
+        return dmax;
+    }
+
+    /// <summary>
+    /// How many distinct ball positions in this die recurred at least
+    /// <paramref name="minCount"/> times (filtered by selected defect codes).
+    /// Answers "how many problem spots does this die have?" — high values
+    /// indicate widespread defects, low values indicate localised hotspots.
+    ///
+    /// Returns 0 when no ball-level data is available (Phase 1 only) because
+    /// per-position information doesn't exist in the .map data — the caller
+    /// should rely on Max-mode display until Phase 2 lands.
+    /// </summary>
+    public int GetRecurringPositionCount(ISet<int> codes, int minCount)
+    {
+        if (Balls.Count == 0 || codes.Count == 0) return 0;
+        int count = 0;
+        foreach (var b in Balls)
+        {
+            if (b.GetCountForCodes(codes) >= minCount) count++;
+        }
+        return count;
+    }
 }
 
 /// <summary>Lot-level recurring defect data computed from all substrates.</summary>

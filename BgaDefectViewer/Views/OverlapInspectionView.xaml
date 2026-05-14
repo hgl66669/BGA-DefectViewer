@@ -99,12 +99,23 @@
 
                     <Separator Margin="0,8"/>
 
-                    <!-- Execute Button -->
-                    <Button Content="Execute" Command="{Binding ExecuteCommand}"
-                            FontWeight="Bold" FontSize="14" Padding="12,6" Margin="0,0,0,8"
-                            HorizontalAlignment="Stretch"
-                            Background="#0078D7" Foreground="White" BorderThickness="0"
-                            IsEnabled="{Binding EnableOverlapInspection}"/>
+                    <!-- Execute / Reset Buttons -->
+                    <Grid Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="6"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <Button Grid.Column="0" Content="Execute" Command="{Binding ExecuteCommand}"
+                                FontWeight="Bold" FontSize="14" Padding="12,6"
+                                HorizontalAlignment="Stretch"
+                                Background="#0078D7" Foreground="White" BorderThickness="0"
+                                IsEnabled="{Binding EnableOverlapInspection}"/>
+                        <Button Grid.Column="2" Content="Reset" Command="{Binding ResetCommand}"
+                                FontSize="13" Padding="12,6"
+                                Background="#E0E0E0" BorderThickness="0"
+                                ToolTip="Clear the current overlap result"/>
+                    </Grid>
 
                     <!-- Validation errors -->
                     <TextBlock Text="{Binding ValidationErrors}" Foreground="Red"
