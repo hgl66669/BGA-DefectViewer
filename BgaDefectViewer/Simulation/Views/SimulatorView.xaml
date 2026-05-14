@@ -87,6 +87,52 @@
                     </Grid>
                 </GroupBox>
 
+                <GroupBox Header="Pad (copper recess, dark under blue light)">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+                        <Grid.RowDefinitions>
+                            <RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/><RowDefinition/>
+                        </Grid.RowDefinitions>
+
+                        <CheckBox Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2"
+                                  Content="Show pad" IsChecked="{Binding PadEnabled}" Margin="2"/>
+                        <Button   Grid.Row="0" Grid.Column="2" Grid.ColumnSpan="2"
+                                  Content="Follow blob (+10µm)"
+                                  Command="{Binding FollowBlobDiameterCommand}"
+                                  ToolTip="Sets Pad diameter = Blob diameter mean + 10µm (KBGA recipe convention)."
+                                  Margin="2" Padding="4,0"/>
+
+                        <TextBlock Grid.Row="1" Grid.Column="0" Style="{StaticResource LabelStyle}" Text="Diameter (mm):"/>
+                        <TextBox   Grid.Row="1" Grid.Column="1" Text="{Binding PadDiameter, StringFormat=F4, UpdateSourceTrigger=LostFocus}"/>
+                        <TextBlock Grid.Row="1" Grid.Column="2" Style="{StaticResource LabelStyle}" Text="Depth (µm):"
+                                   ToolTip="Recess depth — mapped to floor darkness at 0.4 grey/µm.&#x0a;20µm ≈ 8 below background."/>
+                        <TextBox   Grid.Row="1" Grid.Column="3" Text="{Binding PadDepthUm, UpdateSourceTrigger=LostFocus}"/>
+
+                        <TextBlock Grid.Row="2" Grid.Column="0" Style="{StaticResource LabelStyle}" Text="Edge soft (0-1):"
+                                   ToolTip="0 = sharp disk; 0.15 ≈ anti-alias band; 0.4 = very soft."/>
+                        <TextBox   Grid.Row="2" Grid.Column="1" Text="{Binding PadEdgeSoftness, StringFormat=F2, UpdateSourceTrigger=LostFocus}"/>
+                        <TextBlock Grid.Row="2" Grid.Column="2" Style="{StaticResource LabelStyle}" Text="Center dim (0-1):"
+                                   ToolTip="Extra darkening at the geometric center vs. the rim of the core.&#x0a;0 = flat disk; 0.3 = subtle bowl; 0.6 = deep well."/>
+                        <TextBox   Grid.Row="2" Grid.Column="3" Text="{Binding PadCenterDimming, StringFormat=F2, UpdateSourceTrigger=LostFocus}"/>
+
+                        <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource LabelStyle}" Text="Texture (0-1):"
+                                   ToolTip="Pad inner microstructure σ as a fraction of pad darkness. Drawn from a 2×2-block hash so neighbouring pixels correlate (matches the patchy look of copper/PCB recess).&#x0a;0 = flat disk; 0.4 = typical (default); 1.0 = strong mottling."/>
+                        <TextBox   Grid.Row="3" Grid.Column="1" Text="{Binding PadTextureAmount, StringFormat=F2, UpdateSourceTrigger=LostFocus}"/>
+
+                        <TextBlock Grid.Row="4" Grid.Column="0" Style="{StaticResource LabelStyle}" Text="Read noise σ:"
+                                   ToolTip="Intensity-independent baseline sensor noise (dark current / read-out).&#x0a;Combined with Shot noise as σ²(I) = read² + I·shot.&#x0a;2 = typical CMOS (default); 0 = clean."/>
+                        <TextBox   Grid.Row="4" Grid.Column="1" Text="{Binding SensorReadNoise, UpdateSourceTrigger=LostFocus}"/>
+                        <TextBlock Grid.Row="4" Grid.Column="2" Style="{StaticResource LabelStyle}" Text="Shot noise:"
+                                   ToolTip="Photon shot-noise gain. σ² grows linearly with brightness, so bright blob rim becomes noisier than pad/bg.&#x0a;0.05 = typical (default); 0 = pure read-noise-only model."/>
+                        <TextBox   Grid.Row="4" Grid.Column="3" Text="{Binding SensorShotNoise, StringFormat=F3, UpdateSourceTrigger=LostFocus}"/>
+                    </Grid>
+                </GroupBox>
+
                 <GroupBox Header="Blob (per KBGA recipe params)">
                     <Grid>
                         <Grid.ColumnDefinitions>
@@ -174,6 +220,23 @@
                             <TextBlock Grid.Row="3" Grid.Column="0" Style="{StaticResource LabelStyle}" Text="Max (mm):"/>
                             <TextBox   Grid.Row="3" Grid.Column="1" Text="{Binding OffsetMaxMm, StringFormat=F4, UpdateSourceTrigger=LostFocus}"/>
                         </Grid>
+                        <CheckBox Content="Enable collision (balls cannot overlap)"
+                                  IsChecked="{Binding EnableCollision}" Margin="2,6,2,2"
+                                  ToolTip="When ON, any offset ball that would penetrate a neighbour is pushed back to (r₁+r₂ + gap) distance.&#x0a;Effective radius includes radial ShapeDeformation (γ), so deformed balls collide earlier.&#x0a;Real BGA balls are solid and never overlap — they roll until they touch."/>
+                        <Grid Visibility="{Binding EnableCollision, Converter={StaticResource BoolToVis}}">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Grid.Column="0" Style="{StaticResource LabelStyle}" Text="Gap mean (mm):"
+                                       ToolTip="Average contact gap. 0 = perfect kiss; negative ⇒ tighter pack (light compression); positive ⇒ small physical gap."/>
+                            <TextBox   Grid.Column="1" Text="{Binding CollisionGapMean, StringFormat=F4, UpdateSourceTrigger=LostFocus}"/>
+                            <TextBlock Grid.Column="2" Style="{StaticResource LabelStyle}" Text="± Variance:"
+                                       ToolTip="Per-pair random scatter (uniform ±Variance) on top of Mean.&#x0a;Reproducible from (pair, Seed). Clamped to [−5µm, +50µm]."/>
+                            <TextBox   Grid.Column="3" Text="{Binding CollisionGapVariance, StringFormat=F4, UpdateSourceTrigger=LostFocus}"/>
+                        </Grid>
                     </StackPanel>
                 </GroupBox>
 
@@ -253,7 +316,17 @@
             </Border>
 
             <StatusBar Grid.Row="1">
-                <TextBlock Text="{Binding StatusText}"/>
+                <StatusBarItem>
+                    <TextBlock Text="{Binding StatusText}"/>
+                </StatusBarItem>
+                <Separator/>
+                <StatusBarItem>
+                    <TextBlock FontFamily="Consolas"
+                               Text="{Binding ElementName=Canvas, Path=HoverValue,
+                                              StringFormat='Value: {0}',
+                                              TargetNullValue='Value: --',
+                                              FallbackValue='Value: --'}"/>
+                </StatusBarItem>
             </StatusBar>
         </Grid>
     </Grid>
