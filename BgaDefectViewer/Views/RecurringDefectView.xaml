@@ -7,6 +7,7 @@
 
     <UserControl.Resources>
         <converters:CountToColorConverter x:Key="CountToColor"/>
+        <converters:DefectCodeToColorConverter x:Key="DefectColorConv"/>
         <helpers:BindingProxy x:Key="ColsProxy" Data="{Binding GridColumns}"/>
     </UserControl.Resources>
 
@@ -73,7 +74,11 @@
                 <ColumnDefinition Width="5"/>
                 <ColumnDefinition Width="*" MinWidth="200"/>
                 <ColumnDefinition Width="5"/>
-                <ColumnDefinition Width="280" MinWidth="240"/>
+                <!-- Right detail panel: default 340 so the star-sized Judge column
+                     can fit "Missing" (longest defect name) without truncation.
+                     Middle canvas is star-sized so it auto-shrinks as the right
+                     panel grows. MinWidth keeps splitter-drag usable. -->
+                <ColumnDefinition Width="340" MinWidth="260"/>
             </Grid.ColumnDefinitions>
 
             <!-- ── Left: Die grid ──────────────────────────────────────── -->
@@ -180,11 +185,34 @@
                           VirtualizingStackPanel.IsVirtualizing="True"
                           MouseDoubleClick="DetailDataGrid_MouseDoubleClick">
                     <DataGrid.Columns>
-                        <DataGridTextColumn Header="ID"    Binding="{Binding BallId}"    Width="50"/>
-                        <DataGridTextColumn Header="X"     Binding="{Binding DisplayX}"  Width="65"/>
-                        <DataGridTextColumn Header="Y"     Binding="{Binding DisplayY}"  Width="65"/>
-                        <DataGridTextColumn Header="N"     Binding="{Binding Count}"     Width="35"/>
-                        <DataGridTextColumn Header="Judge" Binding="{Binding Judge}"     Width="*"/>
+                        <DataGridTextColumn Header="ID" Binding="{Binding BallId}"   Width="55" MinWidth="50"/>
+                        <DataGridTextColumn Header="X"  Binding="{Binding DisplayX}" Width="70" MinWidth="60"/>
+                        <DataGridTextColumn Header="Y"  Binding="{Binding DisplayY}" Width="70" MinWidth="60"/>
+                        <!-- N column: same count→colour palette as the Die grid + canvas markers,
+                             with WCAG-paired foreground from the same converter. -->
+                        <DataGridTemplateColumn Header="N" Width="40" MinWidth="40" SortMemberPath="Count">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Count}"
+                                               Background="{Binding Count, Converter={StaticResource CountToColor}, ConverterParameter=Background}"
+                                               Foreground="{Binding Count, Converter={StaticResource CountToColor}, ConverterParameter=Foreground}"
+                                               Padding="6,2" FontWeight="Bold"
+                                               TextAlignment="Center"/>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
+                        <!-- Judge column: defect-type colour chip, matching SubstrateViewer's
+                             Judge cell styling so Missing/Shift/Bridge/Extra/etc are recognisable
+                             at a glance from their colour. -->
+                        <DataGridTemplateColumn Header="Judge" Width="*" MinWidth="75" SortMemberPath="Judge">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding Judge}"
+                                               Background="{Binding DominantDefectCode, Converter={StaticResource DefectColorConv}}"
+                                               Padding="4,2" FontWeight="Bold"/>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
                     </DataGrid.Columns>
                 </DataGrid>
             </DockPanel>

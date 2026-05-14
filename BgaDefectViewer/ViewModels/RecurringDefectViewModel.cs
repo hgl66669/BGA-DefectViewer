@@ -312,28 +312,37 @@ public class RecurringDefectViewModel : ViewModelBase
             .OrderByDescending(x => x.EffCount)
             .ToList();
 
-        // Materialise the table — update Judge to reflect selected defect type
+        // Materialise the table — update Judge + DominantDefectCode to reflect
+        // the selected defect type filter (so the Judge cell background colour
+        // matches what the user is currently looking at, not the raw dominant).
         var displayList = filtered.Select(x =>
         {
             var ball = x.Ball;
-            // If filtering by specific codes, recompute Judge from those codes only
-            string judge = selectedCodes.Count == 0
-                ? ball.Judge
-                : (ball.DefectCodeCounts
+            int dominantCode = ball.DominantDefectCode;
+            string judge = ball.Judge;
+            if (selectedCodes.Count > 0)
+            {
+                var top = ball.DefectCodeCounts
                     .Where(kv => selectedCodes.Contains(kv.Key))
                     .OrderByDescending(kv => kv.Value)
-                    .Select(kv => DefectTypes.GetName(kv.Key))
-                    .FirstOrDefault() ?? ball.Judge);
+                    .FirstOrDefault();
+                if (top.Key != 0)
+                {
+                    dominantCode = top.Key;
+                    judge = DefectTypes.GetName(top.Key);
+                }
+            }
 
             return new RecurringBallInfo
             {
-                BallId           = ball.BallId,
-                X                = ball.X,
-                Y                = ball.Y,
-                Diameter         = ball.Diameter,
-                Count            = x.EffCount,
-                Judge            = judge,
-                DefectCodeCounts = ball.DefectCodeCounts
+                BallId             = ball.BallId,
+                X                  = ball.X,
+                Y                  = ball.Y,
+                Diameter           = ball.Diameter,
+                Count              = x.EffCount,
+                Judge              = judge,
+                DominantDefectCode = dominantCode,
+                DefectCodeCounts   = ball.DefectCodeCounts
             };
         }).ToList();
 
