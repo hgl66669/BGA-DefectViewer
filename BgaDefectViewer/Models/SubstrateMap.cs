@@ -41,6 +41,12 @@ public class SubstrateMap : INotifyPropertyChanged
     public string SubstrateId { get; set; } = "";
     public List<MapInspection> Inspections { get; set; } = new();
 
+    /// <summary>
+    /// 此 substrate map 來源的 Lot# 。一般情況為 null（與 <c>MainViewModel.SelectedLotNumber</c> 一致）。
+    /// 在「合併批」session 中，每個 map 帶有其原始 lot id，讓後續 AFA 檔案查找能正確走原 lot 的資料夾。
+    /// </summary>
+    public string? SourceLotId { get; set; }
+
     // ── 目前顯示的 Inspection（由 ViewModel 設定）────────────────────────
     private int _displayInspectionNumber;
     public int DisplayInspectionNumber

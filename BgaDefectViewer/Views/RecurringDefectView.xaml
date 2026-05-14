@@ -55,24 +55,44 @@
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
+                    <Button Content="全選" Command="{Binding SelectAllDefectTypesCommand}"
+                            Padding="6,1" Margin="12,0,2,0" VerticalAlignment="Center"/>
+                    <Button Content="全不選" Command="{Binding ClearAllDefectTypesCommand}"
+                            Padding="6,1" Margin="2,0,0,0" VerticalAlignment="Center"/>
                 </StackPanel>
             </StackPanel>
         </Border>
 
-        <!-- Main 3-panel layout: Die grid | Ball map | Detail table -->
+        <!-- Main 3-panel layout: Die grid | Ball map | Detail table.
+             Left column is Auto-sized so a wider Die matrix expands the panel; capped via
+             MaxWidth so the middle canvas keeps a usable area. The user can still drag the
+             GridSplitter to override (which pins the column to a pixel value). -->
         <Grid>
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="220" MinWidth="100"/>
+                <ColumnDefinition Width="Auto" MinWidth="220" MaxWidth="520"/>
                 <ColumnDefinition Width="5"/>
-                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="*" MinWidth="200"/>
                 <ColumnDefinition Width="5"/>
-                <ColumnDefinition Width="220" MinWidth="140"/>
+                <ColumnDefinition Width="280" MinWidth="240"/>
             </Grid.ColumnDefinitions>
 
             <!-- ── Left: Die grid ──────────────────────────────────────── -->
             <DockPanel Grid.Column="0">
                 <TextBlock DockPanel.Dock="Top" Text="Die Recurring Count"
                            FontSize="11" FontWeight="Bold" Margin="4,4,4,2" Foreground="#444"/>
+                <!-- Metric mode: Max (worst single ball) vs Count (number of recurring positions) -->
+                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="4,0,4,4">
+                    <TextBlock Text="表示:" VerticalAlignment="Center"
+                               FontSize="11" Foreground="#666" Margin="0,0,4,0"/>
+                    <RadioButton Content="最大次数" GroupName="DieMetric"
+                                 IsChecked="{Binding IsDieMetricMax, Mode=TwoWay}"
+                                 VerticalAlignment="Center" Margin="0,0,6,0"
+                                 ToolTip="該 Die 內單一球出現的最大次數"/>
+                    <RadioButton Content="重複点数" GroupName="DieMetric"
+                                 IsChecked="{Binding IsDieMetricCount, Mode=TwoWay}"
+                                 VerticalAlignment="Center"
+                                 ToolTip="該 Die 內出現次數 ≥ 閾值 的球位數量"/>
+                </StackPanel>
                 <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
                     <ItemsControl x:Name="DieGridItems"
                                   ItemsSource="{Binding DieGrid}"
@@ -152,11 +172,13 @@
                 <TextBlock DockPanel.Dock="Top"
                            Text="{Binding LocationsText}"
                            FontSize="13" FontWeight="Bold" Margin="4,4,4,2"/>
-                <DataGrid ItemsSource="{Binding DisplayedBalls}"
+                <DataGrid x:Name="DetailDataGrid"
+                          ItemsSource="{Binding DisplayedBalls}"
                           AutoGenerateColumns="False" IsReadOnly="True"
                           CanUserAddRows="False"
                           GridLinesVisibility="All"
-                          VirtualizingStackPanel.IsVirtualizing="True">
+                          VirtualizingStackPanel.IsVirtualizing="True"
+                          MouseDoubleClick="DetailDataGrid_MouseDoubleClick">
                     <DataGrid.Columns>
                         <DataGridTextColumn Header="ID"    Binding="{Binding BallId}"    Width="50"/>
                         <DataGridTextColumn Header="X"     Binding="{Binding DisplayX}"  Width="65"/>

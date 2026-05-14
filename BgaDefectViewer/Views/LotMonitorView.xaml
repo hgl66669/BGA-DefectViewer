@@ -19,6 +19,23 @@
             <Button Content="合併批號" Command="{Binding MergeLotsCommand}"
                     Margin="24,0,0,0" Padding="10,2" VerticalAlignment="Center"
                     ToolTip="從現有 Lot# 清單合併出一個臨時批號（僅本次 session 有效，不修改檔案）"/>
+            <Button Content="{Binding MountFilterButtonText}"
+                    Command="{Binding MountFilterCommand}"
+                    Margin="8,0,0,0" Padding="10,2" VerticalAlignment="Center"
+                    ToolTip="依首次檢驗時間順序輪流分配 Mount，過濾顯示與統計 (雙/三植球機適用)">
+                <Button.Style>
+                    <Style TargetType="Button">
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding IsMountFilterActive}" Value="True">
+                                <Setter Property="Background" Value="#FFF3E0"/>
+                                <Setter Property="BorderBrush" Value="#FB8C00"/>
+                                <Setter Property="Foreground" Value="#E65100"/>
+                                <Setter Property="FontWeight" Value="SemiBold"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </Button.Style>
+            </Button>
         </StackPanel>
 
         <!-- LOT Summary (bottom) -->
@@ -101,6 +118,19 @@
                             </Style>
                         </TextBlock.Style>
                     </TextBlock>
+
+                    <!-- Cycle Time 選項 -->
+                    <Border BorderBrush="#CFCFCF" BorderThickness="1,0,0,0" Margin="16,2,0,2"/>
+                    <CheckBox Content="僅 Stage=1"
+                              IsChecked="{Binding CycleTimeStage1Only}"
+                              Margin="14,0,0,0" VerticalAlignment="Center"
+                              ToolTip="勾選 = 只計算 Stage=1 row 的 Cycle Time（實際生產節拍）&#x0a;取消 = 全部 row 都納入（含修補後重檢的時間間隔）"/>
+                    <TextBlock Text="Gap 閾值:" Margin="14,0,4,0" VerticalAlignment="Center"
+                               ToolTip="超過此秒數的間隔視為休息/換批，不計入平均"/>
+                    <TextBox Width="50" VerticalAlignment="Center"
+                             Text="{Binding CycleTimeMaxGapSeconds, UpdateSourceTrigger=PropertyChanged}"
+                             ToolTip="預設 300 秒；可自訂"/>
+                    <TextBlock Text="s" Margin="2,0,0,0" VerticalAlignment="Center"/>
                 </StackPanel>
 
                 <!-- Row 1: Top-N summary (visible only when TopNEnabled) -->
@@ -108,12 +138,25 @@
                            Visibility="{Binding IsTopNVisible, Converter={StaticResource BoolToVis}}">
                     <TextBlock DockPanel.Dock="Top" Text="最新 N 片"
                                FontWeight="Bold" Margin="2,0,2,2"/>
+                    <!-- Right-side Cycle Time panel for Top-N -->
+                    <Border DockPanel.Dock="Right" Width="170" Margin="6,0,0,0"
+                            BorderBrush="#CFCFCF" BorderThickness="1"
+                            Background="#FAFAFA" Padding="8,4">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="Cycle Time (最新 N)" FontWeight="SemiBold" FontSize="12"/>
+                            <TextBlock Text="{Binding CycleTimeTopNDisplay}"
+                                       FontSize="18" Foreground="#1565C0" Margin="0,4,0,0"/>
+                        </StackPanel>
+                    </Border>
                     <DataGrid ItemsSource="{Binding TopNSummaryRows}"
                               AutoGenerateColumns="False" IsReadOnly="True"
                               CanUserAddRows="False" HeadersVisibility="Column"
                               GridLinesVisibility="All" FontSize="12"
                               MaxHeight="130"
-                              VerticalScrollBarVisibility="Auto">
+                              VerticalScrollBarVisibility="Auto"
+                              AlternationCount="2"
+                              RowBackground="White"
+                              AlternatingRowBackground="#EFF3F7">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="" Binding="{Binding Label}" Width="100" FontWeight="Bold"/>
                             <DataGridTextColumn Header="OK" Binding="{Binding OK}" Width="65"/>
@@ -128,8 +171,6 @@
                             <DataGridTextColumn Header="NGDie" Binding="{Binding NGDie}" Width="55"/>
                             <DataGridTextColumn Header="GDie" Binding="{Binding GDie}" Width="50"/>
                             <DataGridTextColumn Header="PPM" Binding="{Binding PPM}" Width="65"/>
-                            <DataGridTextColumn Header="Judge" Binding="{Binding Judge}" Width="55"/>
-                            <DataGridTextColumn Header="Stage" Binding="{Binding Stage}" Width="55"/>
                             <DataGridTextColumn Header="Yield[%]" Binding="{Binding YieldPercent}" Width="75"/>
                             <DataGridTextColumn Header="Date / Time" Binding="{Binding DateTime}" Width="160"/>
                         </DataGrid.Columns>
@@ -141,12 +182,25 @@
                     <TextBlock DockPanel.Dock="Top" Text="整批"
                                FontWeight="Bold" Margin="2,0,2,2"
                                Visibility="{Binding IsTopNVisible, Converter={StaticResource BoolToVis}}"/>
+                    <!-- Right-side Cycle Time panel for 整批 -->
+                    <Border DockPanel.Dock="Right" Width="170" Margin="6,0,0,0"
+                            BorderBrush="#CFCFCF" BorderThickness="1"
+                            Background="#FAFAFA" Padding="8,4">
+                        <StackPanel VerticalAlignment="Center">
+                            <TextBlock Text="Cycle Time (整批)" FontWeight="SemiBold" FontSize="12"/>
+                            <TextBlock Text="{Binding CycleTimeOverallDisplay}"
+                                       FontSize="18" Foreground="#1565C0" Margin="0,4,0,0"/>
+                        </StackPanel>
+                    </Border>
                     <DataGrid ItemsSource="{Binding LotSummaryRows}"
                               AutoGenerateColumns="False" IsReadOnly="True"
                               CanUserAddRows="False" HeadersVisibility="Column"
                               GridLinesVisibility="All" FontSize="12"
                               MaxHeight="160"
-                              VerticalScrollBarVisibility="Auto">
+                              VerticalScrollBarVisibility="Auto"
+                              AlternationCount="2"
+                              RowBackground="White"
+                              AlternatingRowBackground="#EFF3F7">
                         <DataGrid.Columns>
                             <DataGridTextColumn Header="" Binding="{Binding Label}" Width="100" FontWeight="Bold"/>
                             <DataGridTextColumn Header="OK" Binding="{Binding OK}" Width="65"/>
@@ -161,8 +215,6 @@
                             <DataGridTextColumn Header="NGDie" Binding="{Binding NGDie}" Width="55"/>
                             <DataGridTextColumn Header="GDie" Binding="{Binding GDie}" Width="50"/>
                             <DataGridTextColumn Header="PPM" Binding="{Binding PPM}" Width="65"/>
-                            <DataGridTextColumn Header="Judge" Binding="{Binding Judge}" Width="55"/>
-                            <DataGridTextColumn Header="Stage" Binding="{Binding Stage}" Width="55"/>
                             <DataGridTextColumn Header="Yield[%]" Binding="{Binding YieldPercent}" Width="75"/>
                             <DataGridTextColumn Header="Date / Time" Binding="{Binding DateTime}" Width="160"/>
                         </DataGrid.Columns>

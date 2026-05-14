@@ -773,4 +773,65 @@ public static class FileLocator
     public static bool HasRollingSummary(string partResultsDir)
         => Directory.Exists(partResultsDir) &&
            File.Exists(Path.Combine(partResultsDir, RollingSummaryName));
+
+    // ─── 下拉清單計數（給 ComboBox 顯示用，背景執行）────────────────────
+
+    /// <summary>
+    /// 計算指定 Part 下有多少個獨立 Lot#（含 legacy 命名、新格式真實批號、虛擬日批）。
+    /// 邏輯與 <see cref="GetLotNumbers"/> 一致但只回傳數量，避免 sort 帶來的額外計算。
+    /// 設計為背景執行，呼叫端應放在 <c>Task.Run</c> 中。
+    /// </summary>
+    public static int CountLotsForPart(string athSysPath, string partNo)
+    {
+        var partDir = GetPartResultsDir(athSysPath, partNo);
+        if (!Directory.Exists(partDir)) return 0;
+
+        var realLots = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var dayLotDates = new HashSet<DateTime>();
+
+        try
+        {
+            foreach (var sub in Directory.GetDirectories(partDir))
+            {
+                var name = Path.GetFileName(sub)!;
+                if (TryParseTimestampFolderName(name, out var ts))
+                {
+                    var lotNo = PeekLotNoFromFolder(sub);
+                    if (string.IsNullOrEmpty(lotNo))
+                        dayLotDates.Add(ts.Date);
+                    else
+                        realLots.Add(lotNo!);
+                }
+                else
+                {
+                    realLots.Add(name);
+                }
+            }
+        }
+        catch
+        {
+            // 容錯：列舉過程中目錄被刪／權限變動時回傳目前累計值
+        }
+
+        return realLots.Count + dayLotDates.Count;
+    }
+
+    /// <summary>
+    /// 計算指定 Lot 內有多少個基板（含多 .afa 同資料夾的情況）。
+    /// 對合併批 (<c>__merged__</c>) 直接回傳 0 — 合併批的基板數由 <c>MergedLotData</c> 自帶。
+    /// 設計為背景執行。
+    /// </summary>
+    public static int CountSubstratesForLot(string athSysPath, string partNo, string lot)
+    {
+        if (TryDecodeMergedLot(lot, out _)) return 0;
+        try
+        {
+            // EnumerateSubstratesForLot 已處理 3 種格式，直接借用其結果
+            return EnumerateSubstratesForLot(athSysPath, partNo, lot).Count;
+        }
+        catch
+        {
+            return 0;
+        }
+    }
 }

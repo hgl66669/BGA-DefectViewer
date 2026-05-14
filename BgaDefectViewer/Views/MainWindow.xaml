@@ -31,7 +31,9 @@
                     VerticalAlignment="Center" Margin="4,0" Padding="8,2"/>
             <TextBlock Grid.Column="3" Text="Part#:" VerticalAlignment="Center" Margin="12,0,4,0"/>
             <ComboBox Grid.Column="4" ItemsSource="{Binding PartNumbers}"
-                      SelectedItem="{Binding SelectedPartNumber}" VerticalAlignment="Center"/>
+                      DisplayMemberPath="DisplayName" SelectedValuePath="Name"
+                      SelectedValue="{Binding SelectedPartNumber}" VerticalAlignment="Center"
+                      ToolTip="料號 (該料號的 Lot 筆數會於背景載入)"/>
             <ComboBox Grid.Column="5" ItemsSource="{Binding SortOptions}"
                       DisplayMemberPath="Display" SelectedValuePath="Mode"
                       SelectedValue="{Binding PartSortMode}"
@@ -39,7 +41,9 @@
                       VerticalAlignment="Center" Margin="4,0,0,0"/>
             <TextBlock Grid.Column="6" Text="Lot#:" VerticalAlignment="Center" Margin="12,0,4,0"/>
             <ComboBox Grid.Column="7" ItemsSource="{Binding LotNumbers}"
-                      SelectedItem="{Binding SelectedLotNumber}" VerticalAlignment="Center"/>
+                      DisplayMemberPath="DisplayName" SelectedValuePath="Id"
+                      SelectedValue="{Binding SelectedLotNumber}" VerticalAlignment="Center"
+                      ToolTip="批號 (該批基板數會於背景載入)"/>
             <ComboBox Grid.Column="8" ItemsSource="{Binding SortOptions}"
                       DisplayMemberPath="Display" SelectedValuePath="Mode"
                       SelectedValue="{Binding LotSortMode}"

@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Text;
+using System.Threading;
 using System.Windows;
 using System.Windows.Input;
 using BgaDefectViewer.Helpers;
@@ -15,8 +16,20 @@ public class MainViewModel : ViewModelBase
     private MasterBall[]? _masterBalls;
     private bool _programmaticNav;
 
+    /// <summary>
+    /// Loaded payload for a session-only merged virtual lot. Includes the aggregated
+    /// LotSession plus the SubstrateMaps gathered from each source lot (with
+    /// <c>SourceLotId</c> tagged on each), so downstream tabs (Substrate Map,
+    /// SubstrateViewer, DefectMap, RecurringDefects) stay functional.
+    /// </summary>
+    private sealed class MergedLotData
+    {
+        public LotSession Session { get; set; } = new();
+        public List<Models.SubstrateMap> SubstrateMaps { get; set; } = new();
+    }
+
     /// <summary>Session-only cache of merged virtual lots, keyed by their <c>__merged__</c> id.</summary>
-    private readonly Dictionary<string, LotSession> _mergedSessions =
+    private readonly Dictionary<string, MergedLotData> _mergedSessions =
         new(StringComparer.OrdinalIgnoreCase);
 
     private string _athleteSysPath = "";
@@ -34,8 +47,8 @@ public class MainViewModel : ViewModelBase
         }
     }
 
-    private ObservableCollection<string> _partNumbers = new();
-    public ObservableCollection<string> PartNumbers
+    private ObservableCollection<PartListItem> _partNumbers = new();
+    public ObservableCollection<PartListItem> PartNumbers
     {
         get => _partNumbers;
         set => SetProperty(ref _partNumbers, value);
@@ -47,6 +60,8 @@ public class MainViewModel : ViewModelBase
         new FolderSortOption { Mode = FolderSortMode.NameDesc,   Display = "名稱 ↓" },
         new FolderSortOption { Mode = FolderSortMode.TimeNewest, Display = "時間 (新→舊)" },
         new FolderSortOption { Mode = FolderSortMode.TimeOldest, Display = "時間 (舊→新)" },
+        new FolderSortOption { Mode = FolderSortMode.CountDesc,  Display = "筆數 ↓" },
+        new FolderSortOption { Mode = FolderSortMode.CountAsc,   Display = "筆數 ↑" },
     };
 
     private FolderSortMode _partSortMode = FolderSortMode.NameAsc;
@@ -78,12 +93,19 @@ public class MainViewModel : ViewModelBase
         }
     }
 
-    private ObservableCollection<string> _lotNumbers = new();
-    public ObservableCollection<string> LotNumbers
+    private ObservableCollection<LotListItem> _lotNumbers = new();
+    public ObservableCollection<LotListItem> LotNumbers
     {
         get => _lotNumbers;
         set => SetProperty(ref _lotNumbers, value);
     }
+
+    /// <summary>
+    /// 背景計數任務的取消來源。每次 OnPartNumberChanged / OnPathChanged 切換時取消上一個任務，
+    /// 避免舊任務在新 lot 列表載入後寫入過時的計數。
+    /// </summary>
+    private CancellationTokenSource? _partCountCts;
+    private CancellationTokenSource? _lotCountCts;
 
     private string? _selectedLotNumber;
     public string? SelectedLotNumber
@@ -149,6 +171,7 @@ public class MainViewModel : ViewModelBase
         LotMonitor.RowDoubleClicked += OnSubstrateRowDoubleClicked;
         LotMonitor.RowSingleClicked += OnLotMonitorRowSingleClicked;
         LotMonitor.MergeLotsRequested += OnMergeLotsRequested;
+        LotMonitor.MountFilterRequested += OnMountFilterRequested;
 
         SubstrateMap.SubstrateSelected += OnSubstrateMapSelected;
         SubstrateMap.SubstrateDoubleClicked += OnSubstrateMapDoubleClicked;
@@ -163,13 +186,15 @@ public class MainViewModel : ViewModelBase
             OnPropertyChanged(nameof(AthleteSysPath));
             OnPathChanged();
 
-            if (!string.IsNullOrEmpty(_settings.LastPartNumber) && PartNumbers.Contains(_settings.LastPartNumber))
+            if (!string.IsNullOrEmpty(_settings.LastPartNumber) &&
+                PartNumbers.Any(p => p.Name == _settings.LastPartNumber))
             {
                 _selectedPartNumber = _settings.LastPartNumber;
                 OnPropertyChanged(nameof(SelectedPartNumber));
                 OnPartNumberChanged();
 
-                if (!string.IsNullOrEmpty(_settings.LastLotNumber) && LotNumbers.Contains(_settings.LastLotNumber))
+                if (!string.IsNullOrEmpty(_settings.LastLotNumber) &&
+                    LotNumbers.Any(l => l.Id == _settings.LastLotNumber))
                 {
                     _selectedLotNumber = _settings.LastLotNumber;
                     OnPropertyChanged(nameof(SelectedLotNumber));
@@ -193,12 +218,14 @@ public class MainViewModel : ViewModelBase
         AthleteSysPath = analysis.RootPath;
 
         // Auto-select part number if detected
-        if (!string.IsNullOrEmpty(analysis.PartNumber) && PartNumbers.Contains(analysis.PartNumber))
+        if (!string.IsNullOrEmpty(analysis.PartNumber) &&
+            PartNumbers.Any(p => p.Name == analysis.PartNumber))
         {
             SelectedPartNumber = analysis.PartNumber;
 
             // Auto-select lot number if detected (OnPartNumberChanged already populated LotNumbers)
-            if (!string.IsNullOrEmpty(analysis.LotNumber) && LotNumbers.Contains(analysis.LotNumber))
+            if (!string.IsNullOrEmpty(analysis.LotNumber) &&
+                LotNumbers.Any(l => l.Id == analysis.LotNumber))
             {
                 SelectedLotNumber = analysis.LotNumber;
             }
@@ -207,14 +234,16 @@ public class MainViewModel : ViewModelBase
 
     private void OnPathChanged()
     {
-        var parts = FileLocator.GetPartNumbers(AthleteSysPath, PartSortMode);
-        PartNumbers = new ObservableCollection<string>(parts);
+        var partNames = FileLocator.GetPartNumbers(AthleteSysPath, PartSortMode);
+        PartNumbers = new ObservableCollection<PartListItem>(
+            partNames.Select(n => new PartListItem { Name = n }));
         SelectedPartNumber = null;
         LotNumbers.Clear();
         SelectedLotNumber = null;
         Settings.Clear();
         _mergedSessions.Clear();   // path change invalidates all merged sessions
         RefreshCanMergeLots();
+        StartLoadingPartCounts();
     }
 
     /// <summary>
@@ -224,11 +253,15 @@ public class MainViewModel : ViewModelBase
     private void RefreshPartNumbers()
     {
         var current = SelectedPartNumber;
-        var parts = FileLocator.GetPartNumbers(AthleteSysPath, PartSortMode);
-        PartNumbers = new ObservableCollection<string>(parts);
+        var partNames = FileLocator.GetPartNumbers(AthleteSysPath, PartSortMode);
+        // CountDesc / CountAsc 在 FileLocator 內部會 fall back 至 NameAsc，因為計數要等背景任務；
+        // 此處將已知計數套用後再排序，可達到「目前可見計數的排序」效果。
+        var items = partNames.Select(n => new PartListItem { Name = n }).ToList();
+        items = ApplyPartCountSort(items, PartSortMode);
+        PartNumbers = new ObservableCollection<PartListItem>(items);
 
         // Preserve selection without re-firing OnPartNumberChanged (which would reload Master/Lot data)
-        if (current != null && parts.Contains(current))
+        if (current != null && partNames.Contains(current))
         {
             _selectedPartNumber = current;
             OnPropertyChanged(nameof(SelectedPartNumber));
@@ -238,6 +271,137 @@ public class MainViewModel : ViewModelBase
             _selectedPartNumber = null;
             OnPropertyChanged(nameof(SelectedPartNumber));
         }
+        StartLoadingPartCounts();
+    }
+
+    /// <summary>
+    /// 套用 CountDesc / CountAsc 排序到 PartListItem 列表；其他排序模式保留原順序。
+    /// 計數尚未載入（LotCount == null）的項目永遠排在最後。
+    /// </summary>
+    private static List<PartListItem> ApplyPartCountSort(List<PartListItem> items, FolderSortMode mode)
+    {
+        if (mode != FolderSortMode.CountDesc && mode != FolderSortMode.CountAsc) return items;
+        var withCount = items.Where(i => i.LotCount.HasValue).ToList();
+        var without = items.Where(i => !i.LotCount.HasValue).ToList();
+        withCount = (mode == FolderSortMode.CountDesc
+                        ? withCount.OrderByDescending(i => i.LotCount!.Value).ThenBy(i => i.Name)
+                        : withCount.OrderBy(i => i.LotCount!.Value).ThenBy(i => i.Name))
+                    .ToList();
+        return withCount.Concat(without).ToList();
+    }
+
+    private static List<LotListItem> ApplyLotCountSort(List<LotListItem> items, FolderSortMode mode)
+    {
+        if (mode != FolderSortMode.CountDesc && mode != FolderSortMode.CountAsc) return items;
+        var withCount = items.Where(i => i.SubstrateCount.HasValue).ToList();
+        var without = items.Where(i => !i.SubstrateCount.HasValue).ToList();
+        withCount = (mode == FolderSortMode.CountDesc
+                        ? withCount.OrderByDescending(i => i.SubstrateCount!.Value).ThenBy(i => i.Id)
+                        : withCount.OrderBy(i => i.SubstrateCount!.Value).ThenBy(i => i.Id))
+                    .ToList();
+        return withCount.Concat(without).ToList();
+    }
+
+    // ── 背景計數任務 ──────────────────────────────────────────────────
+
+    /// <summary>
+    /// 背景列舉 PartNumbers 中每個 Part 的 lot 筆數，依序回灌至 UI。
+    /// 每次呼叫會取消前一個未完成的任務，避免舊任務寫入過時的計數。
+    /// </summary>
+    private void StartLoadingPartCounts()
+    {
+        _partCountCts?.Cancel();
+        _partCountCts = new CancellationTokenSource();
+        var token = _partCountCts.Token;
+        var path = AthleteSysPath;
+        var items = PartNumbers.ToList();
+        var dispatcher = Application.Current.Dispatcher;
+
+        if (string.IsNullOrEmpty(path) || items.Count == 0) return;
+
+        Task.Run(() =>
+        {
+            foreach (var item in items)
+            {
+                if (token.IsCancellationRequested) return;
+                int count;
+                try { count = FileLocator.CountLotsForPart(path, item.Name); }
+                catch { count = 0; }
+                if (token.IsCancellationRequested) return;
+                dispatcher.BeginInvoke(() =>
+                {
+                    if (token.IsCancellationRequested) return;
+                    item.LotCount = count;
+                });
+            }
+            // 全部計數載入完成後，若使用者目前是依筆數排序則重新排序一次
+            if (!token.IsCancellationRequested)
+            {
+                dispatcher.BeginInvoke(() =>
+                {
+                    if (token.IsCancellationRequested) return;
+                    if (PartSortMode is FolderSortMode.CountDesc or FolderSortMode.CountAsc)
+                    {
+                        var sorted = ApplyPartCountSort(PartNumbers.ToList(), PartSortMode);
+                        PartNumbers = new ObservableCollection<PartListItem>(sorted);
+                    }
+                });
+            }
+        }, token);
+    }
+
+    /// <summary>
+    /// 背景列舉 LotNumbers 中每個 Lot 的基板筆數，依序回灌。
+    /// 合併批（<c>__merged__</c>）跳過 — 其計數於 RefreshLotNumbers 已直接由快取帶入。
+    /// </summary>
+    private void StartLoadingLotCounts()
+    {
+        _lotCountCts?.Cancel();
+        _lotCountCts = new CancellationTokenSource();
+        var token = _lotCountCts.Token;
+        var path = AthleteSysPath;
+        var partNo = SelectedPartNumber;
+        var items = LotNumbers.ToList();
+        var dispatcher = Application.Current.Dispatcher;
+
+        if (string.IsNullOrEmpty(path) || string.IsNullOrEmpty(partNo) || items.Count == 0) return;
+
+        Task.Run(() =>
+        {
+            foreach (var item in items)
+            {
+                if (token.IsCancellationRequested) return;
+                if (item.SubstrateCount.HasValue) continue;   // 已有值（如合併批）→ 跳過
+                int count;
+                try { count = FileLocator.CountSubstratesForLot(path, partNo, item.Id); }
+                catch { count = 0; }
+                if (token.IsCancellationRequested) return;
+                dispatcher.BeginInvoke(() =>
+                {
+                    if (token.IsCancellationRequested) return;
+                    item.SubstrateCount = count;
+                });
+            }
+            if (!token.IsCancellationRequested)
+            {
+                dispatcher.BeginInvoke(() =>
+                {
+                    if (token.IsCancellationRequested) return;
+                    if (LotSortMode is FolderSortMode.CountDesc or FolderSortMode.CountAsc)
+                    {
+                        var current = SelectedLotNumber;
+                        var sorted = ApplyLotCountSort(LotNumbers.ToList(), LotSortMode);
+                        LotNumbers = new ObservableCollection<LotListItem>(sorted);
+                        // 保留選取
+                        if (current != null && LotNumbers.Any(l => l.Id == current))
+                        {
+                            _selectedLotNumber = current;
+                            OnPropertyChanged(nameof(SelectedLotNumber));
+                        }
+                    }
+                });
+            }
+        }, token);
     }
 
     /// <summary>
@@ -254,14 +418,28 @@ public class MainViewModel : ViewModelBase
         }
 
         var current = SelectedLotNumber;
-        var lots = FileLocator.GetLotNumbers(AthleteSysPath, SelectedPartNumber, LotSortMode).ToList();
+        var lotIds = FileLocator.GetLotNumbers(AthleteSysPath, SelectedPartNumber, LotSortMode).ToList();
         // Preserve any session-only merged lots so re-sorting doesn't drop them.
         foreach (var mergedId in _mergedSessions.Keys)
-            if (!lots.Contains(mergedId, StringComparer.OrdinalIgnoreCase))
-                lots.Add(mergedId);
-        LotNumbers = new ObservableCollection<string>(lots);
+            if (!lotIds.Contains(mergedId, StringComparer.OrdinalIgnoreCase))
+                lotIds.Add(mergedId);
 
-        if (current != null && lots.Contains(current, StringComparer.OrdinalIgnoreCase))
+        // 嘗試保留已載入的基板計數（避免重排序時把計數歸零）
+        var existingCounts = LotNumbers.ToDictionary(li => li.Id, li => li.SubstrateCount,
+                                                     StringComparer.OrdinalIgnoreCase);
+        var items = lotIds.Select(id =>
+        {
+            var item = new LotListItem { Id = id };
+            if (_mergedSessions.TryGetValue(id, out var mg))
+                item.SubstrateCount = mg.Session.SubstrateCount;
+            else if (existingCounts.TryGetValue(id, out var c))
+                item.SubstrateCount = c;
+            return item;
+        }).ToList();
+        items = ApplyLotCountSort(items, LotSortMode);
+        LotNumbers = new ObservableCollection<LotListItem>(items);
+
+        if (current != null && lotIds.Contains(current, StringComparer.OrdinalIgnoreCase))
         {
             _selectedLotNumber = current;
             OnPropertyChanged(nameof(SelectedLotNumber));
@@ -272,6 +450,7 @@ public class MainViewModel : ViewModelBase
             OnPropertyChanged(nameof(SelectedLotNumber));
         }
         RefreshCanMergeLots();
+        StartLoadingLotCounts();
     }
 
     private async void OnPartNumberChanged()
@@ -281,10 +460,13 @@ public class MainViewModel : ViewModelBase
         // Part# change invalidates session-only merged lots from the previous Part#.
         _mergedSessions.Clear();
 
-        var lots = FileLocator.GetLotNumbers(AthleteSysPath, SelectedPartNumber, LotSortMode);
-        LotNumbers = new ObservableCollection<string>(lots);
+        var lotIds = FileLocator.GetLotNumbers(AthleteSysPath, SelectedPartNumber, LotSortMode);
+        var items = lotIds.Select(id => new LotListItem { Id = id }).ToList();
+        items = ApplyLotCountSort(items, LotSortMode);
+        LotNumbers = new ObservableCollection<LotListItem>(items);
         SelectedLotNumber = null;
         RefreshCanMergeLots();
+        StartLoadingLotCounts();
 
         // Load master CSV immediately so Substrate Viewer shows coordinate map
         var masterCheck = FileLocator.FindMasterCsv(AthleteSysPath, SelectedPartNumber);
@@ -310,17 +492,66 @@ public class MainViewModel : ViewModelBase
 
         // ── Session-only merged lot: load from in-memory cache, skip all disk I/O ──
         if (FileLocator.TryDecodeMergedLot(SelectedLotNumber!, out _) &&
-            _mergedSessions.TryGetValue(SelectedLotNumber!, out var mergedSession))
+            _mergedSessions.TryGetValue(SelectedLotNumber!, out var merged))
         {
             try
             {
                 StatusText = "Loading merged lot...";
-                LotMonitor.Load(mergedSession);
-                SubstrateMap.Load(Enumerable.Empty<Models.SubstrateMap>());
-                DefectMap.Load(null);
-                RecurringDefect.Load(null, _masterBalls);
+
+                LotMonitor.Load(merged.Session);
+
+                // Substrate Map: load combined maps (each tagged with SourceLotId so AFA
+                // file lookups in OnSubstrateMap*Clicked resolve through the original lot).
+                SubstrateMap.Load(merged.SubstrateMaps);
+
+                // Defect Map: aggregate INSP=1 maps from all source lots into one heatmap.
+                if (merged.SubstrateMaps.Count > 0)
+                {
+                    var mapData = DieMapCalculator.Calculate(
+                        merged.SubstrateMaps, SelectedLotNumber!, SelectedPartNumber!);
+                    DefectMap.Load(mapData);
+                }
+                else
+                {
+                    DefectMap.Load(null);
+                }
+
+                // Recurring Defects: same aggregation.
+                if (merged.SubstrateMaps.Count > 0)
+                {
+                    var recurringData = RecurringDefectCalculator.CalculateFromMaps(
+                        merged.SubstrateMaps, SelectedLotNumber!);
+                    RecurringDefect.Load(recurringData, _masterBalls);
+
+                    // Phase 2: enrich with ball-level .afa data (background) — resolve each
+                    // substrate's .afa through its SourceLotId, not the merged-lot id.
+                    if (recurringData != null)
+                    {
+                        var partNo = SelectedPartNumber!;
+                        var maps = merged.SubstrateMaps.ToList();
+                        _ = Task.Run(() =>
+                        {
+                            var afas = new List<AfaFile>();
+                            foreach (var m in maps)
+                            {
+                                var lotForAfa = m.SourceLotId ?? SelectedLotNumber!;
+                                var chk = FileLocator.FindAfaFile(AthleteSysPath, partNo, lotForAfa, m.SubstrateId);
+                                if (chk.Found) afas.Add(AfaFileParser.Parse(chk.ActualPath!));
+                            }
+                            RecurringDefectCalculator.EnrichWithAfaData(recurringData, afas);
+                        }).ContinueWith(_ =>
+                            Application.Current.Dispatcher.Invoke(() => RecurringDefect.RefreshBallData()));
+                    }
+                }
+                else
+                {
+                    RecurringDefect.Load(null, _masterBalls);
+                }
+
                 Settings.UpdateFileStatuses(AthleteSysPath, SelectedPartNumber, SelectedLotNumber);
-                StatusText = $"Merged lot loaded: {mergedSession.Rows.Count} rows / {mergedSession.SubstrateCount} substrates (in-memory)";
+                StatusText = $"Merged lot loaded: {merged.Session.Rows.Count} rows / " +
+                             $"{merged.Session.SubstrateCount} substrates / " +
+                             $"{merged.SubstrateMaps.Count} maps (in-memory)";
             }
             catch (Exception ex)
             {
@@ -390,7 +621,8 @@ public class MainViewModel : ViewModelBase
                         RowIndex = rowIndex++,
                     });
                 }
-                session.SubstrateCount = session.Rows.Select(r => r.SubstrateId).Distinct().Count();
+                session.SubstrateCount = session.Rows.Select(r => r.Name)
+                                                     .Distinct(StringComparer.OrdinalIgnoreCase).Count();
                 if (session.LotName.Length == 0)
                     session.LotName = FileLocator.FormatLotForDisplay(SelectedLotNumber);
             }
@@ -558,7 +790,11 @@ public class MainViewModel : ViewModelBase
         {
             StatusText = "Loading substrate from map...";
 
-            var afaCheck = FileLocator.FindAfaFile(AthleteSysPath, SelectedPartNumber, SelectedLotNumber, map.SubstrateId);
+            // In merged-lot sessions, each SubstrateMap carries its original SourceLotId
+            // so AFA lookup walks the right folder. For regular lots SourceLotId is null
+            // and we fall back to the currently-selected lot.
+            var lotForAfa = map.SourceLotId ?? SelectedLotNumber;
+            var afaCheck = FileLocator.FindAfaFile(AthleteSysPath, SelectedPartNumber, lotForAfa, map.SubstrateId);
 
             if (!afaCheck.Found)
             {
@@ -572,7 +808,9 @@ public class MainViewModel : ViewModelBase
             var afa = await Task.Run(() => AfaFileParser.Parse(afaCheck.ActualPath!));
             SubstrateViewer.LoadAfa(afa, inspectionNumber: SubstrateMap.SelectedInspection);
             SelectedTabIndex = 3;  // Substrate Viewer is now tab index 3
-            StatusText = $"Loaded {Path.GetFileName(afaCheck.ActualPath)}";
+            StatusText = afa.Inspections.Count == 0
+                ? $"Loaded {Path.GetFileName(afaCheck.ActualPath)} — ⚠ AFA 無 INSPECTION 區塊（檔案可能仍在寫入）"
+                : $"Loaded {Path.GetFileName(afaCheck.ActualPath)}";
         }
         catch (Exception ex)
         {
@@ -590,7 +828,9 @@ public class MainViewModel : ViewModelBase
         {
             StatusText = "Loading die from map...";
 
-            var afaCheck = FileLocator.FindAfaFile(AthleteSysPath, SelectedPartNumber, SelectedLotNumber, map.SubstrateId);
+            // Same merged-lot handling as OnSubstrateMapDoubleClicked.
+            var lotForAfa = map.SourceLotId ?? SelectedLotNumber;
+            var afaCheck = FileLocator.FindAfaFile(AthleteSysPath, SelectedPartNumber, lotForAfa, map.SubstrateId);
 
             if (!afaCheck.Found)
             {
@@ -619,10 +859,19 @@ public class MainViewModel : ViewModelBase
     /// <summary>
     /// 重新讀取資料 — 不只重讀檔案內容，也會 rescan 磁碟上是否新增了 Part# 或 Lot# 資料夾。
     /// 生產中按下時，若新批號剛產生，會立即出現在 ComboBox 中。
+    /// <para>同時清掉 Lot/Part dropdown 的快取計數（生產中基板數量會變動），讓背景重新計算。</para>
     /// </summary>
     private void Reload()
     {
         if (string.IsNullOrEmpty(AthleteSysPath)) return;
+
+        // 生產中磁碟上的基板數量會變動：清掉計數快取讓背景重算
+        // (Refresh*Numbers 預設會把舊計數帶到新 item，避免排序時閃爍；Reload 場景需要強制清除)
+        foreach (var p in PartNumbers) p.LotCount = null;
+        foreach (var l in LotNumbers)
+            // 合併批的 SubstrateCount 由快取維護，不可清掉；只清磁碟批的
+            if (!IsMergedLot(l.Id))
+                l.SubstrateCount = null;
 
         // Re-enumerate Part# folders (catches newly-created Parts)
         RefreshPartNumbers();
@@ -652,7 +901,20 @@ public class MainViewModel : ViewModelBase
     /// </summary>
     private void RefreshCanMergeLots()
     {
-        LotMonitor.CanMergeLots = LotNumbers.Count(id => !IsMergedLot(id)) >= 2;
+        LotMonitor.CanMergeLots = LotNumbers.Count(li => !IsMergedLot(li.Id)) >= 2;
+    }
+
+    /// <summary>
+    /// Opens the Mount filter (special statistics rule) dialog. On OK, push the new
+    /// <see cref="MountFilter"/> into <c>LotMonitor.ActiveMountFilter</c> which triggers
+    /// re-filtering of Rows and recalculation of the summaries.
+    /// </summary>
+    private void OnMountFilterRequested()
+    {
+        var dialog = new Views.MountFilterDialog(LotMonitor.ActiveMountFilter)
+            { Owner = Application.Current.MainWindow };
+        if (dialog.ShowDialog() != true) return;
+        LotMonitor.ActiveMountFilter = dialog.Result;
     }
 
     /// <summary>Opens the merge dialog and, on OK, builds + selects a session-only virtual lot.</summary>
@@ -664,7 +926,8 @@ public class MainViewModel : ViewModelBase
             return;
         }
 
-        var dialog = new Views.LotMergeDialog(LotNumbers) { Owner = Application.Current.MainWindow };
+        var dialog = new Views.LotMergeDialog(LotNumbers.Select(li => li.Id))
+            { Owner = Application.Current.MainWindow };
         if (dialog.ShowDialog() != true) return;
         var picks = dialog.SelectedLotIds;
         if (picks.Count < 2) return;
@@ -672,7 +935,7 @@ public class MainViewModel : ViewModelBase
         try
         {
             var merged = BuildMergedSession(picks);
-            if (merged.Rows.Count == 0)
+            if (merged.Session.Rows.Count == 0)
             {
                 MessageBox.Show("所選 Lot 皆無法讀取資料，已取消合併。", "合併批號",
                                 MessageBoxButton.OK, MessageBoxImage.Warning);
@@ -681,7 +944,11 @@ public class MainViewModel : ViewModelBase
 
             var mergedId = FileLocator.EncodeMergedLot(DateTime.Now);
             _mergedSessions[mergedId] = merged;
-            LotNumbers.Add(mergedId);
+            LotNumbers.Add(new LotListItem
+            {
+                Id = mergedId,
+                SubstrateCount = merged.Session.SubstrateCount
+            });
             RefreshCanMergeLots();
             SelectedLotNumber = mergedId;     // triggers OnLotNumberChanged → merged branch
         }
@@ -693,48 +960,78 @@ public class MainViewModel : ViewModelBase
     }
 
     /// <summary>
-    /// Reads each source lot's <c>.summary.csv</c> via the existing parser path and concatenates
-    /// the Rows into a single <see cref="LotSession"/>. No files are modified.
+    /// Reads each source lot's <c>.summary.csv</c> + <c>.map</c> files via the existing parsers
+    /// and bundles them into a <see cref="MergedLotData"/>. Each loaded <c>SubstrateMap</c>
+    /// is tagged with <c>SourceLotId</c> so downstream AFA lookups can resolve through the
+    /// original lot's folder. No files are modified.
     /// </summary>
-    private LotSession BuildMergedSession(IReadOnlyList<string> lotIds)
+    private MergedLotData BuildMergedSession(IReadOnlyList<string> lotIds)
     {
-        var merged = new List<SummaryRow>();
+        var mergedRows = new List<SummaryRow>();
+        var mergedMaps = new List<Models.SubstrateMap>();
         var sources = new List<string>();
 
         foreach (var lotId in lotIds)
         {
+            // --- Summary rows ---
             var chk = FileLocator.FindSummaryCsv(AthleteSysPath, SelectedPartNumber!, lotId);
-            if (!chk.Found) continue;
+            LotSession? part = null;
+            if (chk.Found)
+            {
+                try
+                {
+                    part = FileLocator.TryDecodeVirtualDayLot(lotId, out var d)
+                        ? SummaryCsvParser.ParseFilteredByDate(chk.ActualPath!, d)
+                        : SummaryCsvParser.ParseFirstLot(chk.ActualPath!);
+                }
+                catch
+                {
+                    part = null;
+                }
+            }
 
-            LotSession part;
+            // --- Substrate .map files (one per substrate folder) ---
+            List<Models.SubstrateMap> partMaps = new();
             try
             {
-                part = FileLocator.TryDecodeVirtualDayLot(lotId, out var d)
-                    ? SummaryCsvParser.ParseFilteredByDate(chk.ActualPath!, d)
-                    : SummaryCsvParser.ParseFirstLot(chk.ActualPath!);
+                var mapFiles = FileLocator.EnumerateMapFilesForLot(AthleteSysPath, SelectedPartNumber!, lotId);
+                foreach (var f in mapFiles)
+                {
+                    try
+                    {
+                        var m = SubstrateMapParser.Parse(f);
+                        m.SourceLotId = lotId;   // remember which lot this map came from
+                        partMaps.Add(m);
+                    }
+                    catch { /* skip unparseable maps */ }
+                }
             }
-            catch
-            {
-                continue;
-            }
+            catch { /* enumeration failure: skip */ }
 
-            if (part.Rows.Count == 0) continue;
-            merged.AddRange(part.Rows);
+            bool gotSomething = (part?.Rows.Count ?? 0) > 0 || partMaps.Count > 0;
+            if (!gotSomething) continue;
+
+            if (part != null && part.Rows.Count > 0)
+                mergedRows.AddRange(part.Rows);
+            mergedMaps.AddRange(partMaps);
             sources.Add(FileLocator.FormatLotForDisplay(lotId));
         }
 
-        for (int i = 0; i < merged.Count; i++)
-            merged[i].RowIndex = i;
+        for (int i = 0; i < mergedRows.Count; i++)
+            mergedRows[i].RowIndex = i;
 
         var now = DateTime.Now;
         var session = new LotSession
         {
             LotName = $"{FileLocator.MergedLotDisplayPrefix}{now:yyyy-MM-dd HH:mm}" +
                       (sources.Count > 0 ? $" ({sources.Count} lots: {string.Join(", ", sources)})" : ""),
-            SubstrateCount = merged.Select(r => r.SubstrateId).Distinct().Count(),
-            Rows = merged,
-            Summary = LotSummaryCalculator.Calculate(merged)
+            // Count by Name (unique full identifier, e.g., "0514Leg1-1" vs "0514Leg2-1")
+            // not SubstrateId, which strips the lot prefix and collides across merged source lots.
+            SubstrateCount = mergedRows.Select(r => r.Name)
+                                       .Distinct(StringComparer.OrdinalIgnoreCase).Count(),
+            Rows = mergedRows,
+            Summary = LotSummaryCalculator.Calculate(mergedRows)
         };
-        return session;
+        return new MergedLotData { Session = session, SubstrateMaps = mergedMaps };
     }
 }

@@ -106,7 +106,8 @@ public static class SummaryCsvParser
 
         // If SubstrateCount was not set, count unique substrate IDs
         if (session.SubstrateCount == 0 && session.Rows.Count > 0)
-            session.SubstrateCount = session.Rows.Select(r => r.SubstrateId).Distinct().Count();
+            session.SubstrateCount = session.Rows.Select(r => r.Name)
+                                                 .Distinct(StringComparer.OrdinalIgnoreCase).Count();
 
         // If CSV had no LOT Summary section, calculate it from individual rows
         if (session.Summary.Lines.Count == 0 && session.Rows.Count > 0)
@@ -217,7 +218,7 @@ public static class SummaryCsvParser
 
         foreach (var row in full.Rows)
         {
-            if (TryParseRowDate(row.DateTime, out var d) && d.Date == targetDate.Date)
+            if (RowDateParser.TryParse(row.DateTime, out var d) && d.Date == targetDate.Date)
                 filtered.Rows.Add(row);
         }
 
@@ -225,23 +226,13 @@ public static class SummaryCsvParser
         for (int i = 0; i < filtered.Rows.Count; i++)
             filtered.Rows[i].RowIndex = i;
 
-        filtered.SubstrateCount = filtered.Rows.Select(r => r.SubstrateId).Distinct().Count();
+        filtered.SubstrateCount = filtered.Rows.Select(r => r.Name)
+                                                .Distinct(StringComparer.OrdinalIgnoreCase).Count();
 
         if (filtered.Rows.Count > 0)
             filtered.Summary = LotSummaryCalculator.Calculate(filtered.Rows);
 
         return filtered;
-    }
-
-    private static bool TryParseRowDate(string raw, out DateTime date)
-    {
-        date = default;
-        if (string.IsNullOrWhiteSpace(raw)) return false;
-        var s = raw.Trim();
-        // Accept "yyyy/MM/dd HH:mm:ss" or "yyyy/MM/dd HH:mm"
-        string[] formats = { "yyyy/MM/dd HH:mm:ss", "yyyy/MM/dd HH:mm", "yyyy/M/d HH:mm:ss", "yyyy/M/d HH:mm" };
-        return DateTime.TryParseExact(s, formats, CultureInfo.InvariantCulture, DateTimeStyles.None, out date)
-            || DateTime.TryParse(s, CultureInfo.InvariantCulture, DateTimeStyles.None, out date);
     }
 
     private static string[] ReadAllLinesShared(string path)

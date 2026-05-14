@@ -1,0 +1,47 @@
+<Window x:Class="BgaDefectViewer.Views.MountFilterDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="特殊統計規則" Width="380" SizeToContent="Height"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        ResizeMode="NoResize">
+    <DockPanel Margin="14">
+        <TextBlock DockPanel.Dock="Top" Margin="0,0,0,10" TextWrapping="Wrap"
+                   Foreground="#444"
+                   Text="依基板首次檢驗 (Stage=1) 的時間順序，輪流分配給 Mount 1 / 2 (/ 3)，再過濾顯示。&#x0a;此法不依賴基板命名，即使名稱無流水號或編號隨機，也能反映實際生產時的植球站分配順序。"/>
+
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal"
+                    HorizontalAlignment="Right" Margin="0,12,0,0">
+            <Button Content="確定" Width="80" Margin="4,0" IsDefault="True"
+                    Click="OkButton_Click"/>
+            <Button Content="取消" Width="80" Margin="4,0" IsCancel="True"/>
+        </StackPanel>
+
+        <StackPanel>
+            <GroupBox Header="模式">
+                <StackPanel Margin="6,4">
+                    <RadioButton Content="不過濾" GroupName="Mode" Margin="0,3"
+                                 IsChecked="{Binding IsOff}"/>
+                    <RadioButton Content="雙植球機 (時序輪流：1st → M1，2nd → M2，3rd → M1 …)"
+                                 GroupName="Mode" Margin="0,3"
+                                 IsChecked="{Binding IsDual}"/>
+                    <RadioButton Content="三植球機 (時序輪流：1st → M1，2nd → M2，3rd → M3 …)"
+                                 GroupName="Mode" Margin="0,3"
+                                 IsChecked="{Binding IsTriple}"/>
+                </StackPanel>
+            </GroupBox>
+
+            <GroupBox Header="顯示哪些 Mount" Margin="0,10,0,0"
+                      IsEnabled="{Binding ModeIsFilter}">
+                <StackPanel Margin="6,4">
+                    <CheckBox Content="Mount 1" Margin="0,3"
+                              IsChecked="{Binding Mount1Enabled}"/>
+                    <CheckBox Content="Mount 2" Margin="0,3"
+                              IsChecked="{Binding Mount2Enabled}"/>
+                    <CheckBox Content="Mount 3" Margin="0,3"
+                              IsChecked="{Binding Mount3Enabled}"
+                              IsEnabled="{Binding IsTriple}"/>
+                </StackPanel>
+            </GroupBox>
+        </StackPanel>
+    </DockPanel>
+</Window>
