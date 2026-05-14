@@ -19,6 +19,9 @@ public class LotMonitorViewModel : ViewModelBase
             _ => MergeLotsRequested?.Invoke(),
             _ => CanMergeLots);
         MountFilterCommand = new RelayCommand(_ => MountFilterRequested?.Invoke());
+        ExportReportCommand = new RelayCommand(
+            _ => ExportReportRequested?.Invoke(),
+            _ => _filteredRows.Count > 0);
     }
 
     // ── Existing observable state ────────────────────────────────────────
@@ -309,6 +312,38 @@ public class LotMonitorViewModel : ViewModelBase
         IsMountFilterActive
             ? $"特殊統計  [{ActiveMountFilter.Describe()}]"
             : "特殊統計";
+
+    // ── New: 輸出報表 (CSV) ─────────────────────────────────────────────
+
+    public ICommand ExportReportCommand { get; }
+    /// <summary>MainViewModel 訂閱：開啟 SaveFileDialog 並寫檔。</summary>
+    public event Action? ExportReportRequested;
+
+    /// <summary>
+    /// 把目前 LotMonitor 的可見狀態（已套用合併批 / 特殊統計 / Yield 選項 / Cycle Time 等）
+    /// 組成 <see cref="LotReportExporter.ExportInput"/>，給 MainViewModel 呼叫 exporter 用。
+    /// </summary>
+    public LotReportExporter.ExportInput BuildExportInput() => new()
+    {
+        // English lot name for the export (UI keeps Chinese prefixes; CSV gets the English form).
+        LotDisplayName = LotName
+            .Replace("合併 ", "Merged ")
+            .Replace(" (虛擬)", " (day-batch)"),
+        SubstrateCount = SubstrateCount,
+        Rows = _filteredRows.ToList(),                                 // mount-filtered snapshot
+        SummaryLines = LotSummaryRows.ToList(),                        // current 整批 summary
+        YieldMode = YieldMode.ToString(),
+        CountETC = CountETC,
+        DieBaseDieCountEffective = DieBaseDieCountEffective,
+        DieBaseDieCountIsManual = DieBaseDieCountIsManual,
+        MountFilterDescription = ActiveMountFilter.DescribeEnglish(),
+        TopNEnabled = TopNEnabled,
+        TopN = TopN,
+        CycleTimeStage1Only = CycleTimeStage1Only,
+        CycleTimeMaxGapSeconds = CycleTimeMaxGapSeconds,
+        CycleTimeOverall = CycleTimeOverall,
+        CycleTimeTopN = CycleTimeTopN,
+    };
 
     // ── Existing events ──────────────────────────────────────────────────
 

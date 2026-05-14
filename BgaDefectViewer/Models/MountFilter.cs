@@ -91,7 +91,7 @@ public class MountFilter
     public int? GetMountIndex(string substrateName)
         => _substrateToMount.TryGetValue(substrateName, out var idx) ? idx : null;
 
-    /// <summary>UI 上「啟用中過濾」的簡短描述，無啟用時為空字串。</summary>
+    /// <summary>UI 上「啟用中過濾」的簡短描述（繁體中文），無啟用時為空字串。</summary>
     public string Describe()
     {
         if (Mode == MountMode.Off) return "";
@@ -102,6 +102,20 @@ public class MountFilter
         string modeLabel = Mode == MountMode.Dual ? "雙植球" : "三植球";
         return enabled.Count == 0
             ? $"{modeLabel}: 全部排除"
+            : $"{modeLabel}: {string.Join("+", enabled)}";
+    }
+
+    /// <summary>同 <see cref="Describe"/> 但用英語；供 CSV 匯出使用。</summary>
+    public string DescribeEnglish()
+    {
+        if (Mode == MountMode.Off) return "";
+        var enabled = new List<string>();
+        if (Mount1Enabled) enabled.Add("M1");
+        if (Mount2Enabled) enabled.Add("M2");
+        if (Mode == MountMode.Triple && Mount3Enabled) enabled.Add("M3");
+        string modeLabel = Mode == MountMode.Dual ? "Dual mounter" : "Triple mounter";
+        return enabled.Count == 0
+            ? $"{modeLabel}: all excluded"
             : $"{modeLabel}: {string.Join("+", enabled)}";
     }
 
