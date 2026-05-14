@@ -28,9 +28,28 @@ public class MainViewModel : ViewModelBase
         public List<Models.SubstrateMap> SubstrateMaps { get; set; } = new();
     }
 
-    /// <summary>Session-only cache of merged virtual lots, keyed by their <c>__merged__</c> id.</summary>
+    /// <summary>Session-only cache of merged virtual lots, keyed by <c>__merged__</c> or
+    /// <c>__umkf__</c> id. Both flavors share the cache; OnLotNumberChanged routes through
+    /// the same in-memory load path.</summary>
     private readonly Dictionary<string, MergedLotData> _mergedSessions =
         new(StringComparer.OrdinalIgnoreCase);
+
+    // ── UMKF auto-merge state ────────────────────────────────────────
+    /// <summary>Raw lot ids returned by <c>FileLocator.GetLotNumbers</c> for the current
+    /// Part#. Cached so toggling <see cref="IsUmkfMergeEnabled"/> / <see cref="IncludeRBatches"/>
+    /// can re-group without re-reading the disk.</summary>
+    private List<string>? _rawLotIdsForCurrentPart;
+
+    /// <summary>UMKF master id (<c>__umkf__...</c>) → list of raw child lot ids it represents.
+    /// Populated by <see cref="RebuildLotsForUmkfMode"/>, consumed by
+    /// <see cref="OnLotNumberChanged"/> for lazy session build and by
+    /// <see cref="BuildMergedSession"/> for expansion.</summary>
+    private readonly Dictionary<string, List<string>> _umkfMasterToChildren =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Suppress the rebuild side-effects of the UMKF property setters during the
+    /// part-number-change transition (we batch-set several flags then call rebuild once).</summary>
+    private bool _suppressUmkfRebuild;
 
     private string _athleteSysPath = "";
     public string AthleteSysPath
@@ -134,6 +153,48 @@ public class MainViewModel : ViewModelBase
     {
         get => _statusText;
         set => SetProperty(ref _statusText, value);
+    }
+
+    // ── UMKF Mode (PSPREP_/PSPUBL_ 自動合併) ─────────────────────────
+    private bool _isUmkfModeAvailable;
+    /// <summary>True 表示目前 Part# 符合 UMKF 自動合併條件 (前綴 + 第6碼變動規律)。
+    /// 控制上方配置列的 UMKF CheckBox 顯示。</summary>
+    public bool IsUmkfModeAvailable
+    {
+        get => _isUmkfModeAvailable;
+        set => SetProperty(ref _isUmkfModeAvailable, value);
+    }
+
+    private bool _isUmkfMergeEnabled;
+    /// <summary>UMKF 自動合併模式開關。勾選後 LotNumbers 以母批形式呈現。</summary>
+    public bool IsUmkfMergeEnabled
+    {
+        get => _isUmkfMergeEnabled;
+        set
+        {
+            if (SetProperty(ref _isUmkfMergeEnabled, value) && !_suppressUmkfRebuild)
+                RebuildLotsForUmkfMode();
+        }
+    }
+
+    private bool _includeRBatches = true;
+    /// <summary>UMKF 模式下是否將 <c>-R</c> 結尾的子批納入合併。預設納入，使用者可取消。</summary>
+    public bool IncludeRBatches
+    {
+        get => _includeRBatches;
+        set
+        {
+            if (SetProperty(ref _includeRBatches, value) && !_suppressUmkfRebuild)
+                RebuildLotsForUmkfMode();
+        }
+    }
+
+    private string _umkfStatusText = "";
+    /// <summary>UMKF 模式下的精簡狀態提示 (例：<c>"12→4 批"</c>)，顯示於 CheckBox 旁。</summary>
+    public string UmkfStatusText
+    {
+        get => _umkfStatusText;
+        set => SetProperty(ref _umkfStatusText, value);
     }
 
     // ── 子 ViewModels ────────────────────────────────────────────────
@@ -242,6 +303,11 @@ public class MainViewModel : ViewModelBase
         SelectedLotNumber = null;
         Settings.Clear();
         _mergedSessions.Clear();   // path change invalidates all merged sessions
+        _umkfMasterToChildren.Clear();
+        _rawLotIdsForCurrentPart = null;
+        _suppressUmkfRebuild = true;
+        try { IsUmkfModeAvailable = false; IsUmkfMergeEnabled = false; UmkfStatusText = ""; }
+        finally { _suppressUmkfRebuild = false; }
         RefreshCanMergeLots();
         StartLoadingPartCounts();
     }
@@ -290,16 +356,156 @@ public class MainViewModel : ViewModelBase
         return withCount.Concat(without).ToList();
     }
 
-    private static List<LotListItem> ApplyLotCountSort(List<LotListItem> items, FolderSortMode mode)
+    /// <summary>
+    /// 依當前 LotSortMode 決定次要排序，主要排序固定為「CreatedAt 日期降序」(group header 顯示用)。
+    /// 未知日期的項目排到最後。
+    /// </summary>
+    private static List<LotListItem> SortLotItems(IEnumerable<LotListItem> items, FolderSortMode mode)
     {
-        if (mode != FolderSortMode.CountDesc && mode != FolderSortMode.CountAsc) return items;
-        var withCount = items.Where(i => i.SubstrateCount.HasValue).ToList();
-        var without = items.Where(i => !i.SubstrateCount.HasValue).ToList();
-        withCount = (mode == FolderSortMode.CountDesc
-                        ? withCount.OrderByDescending(i => i.SubstrateCount!.Value).ThenBy(i => i.Id)
-                        : withCount.OrderBy(i => i.SubstrateCount!.Value).ThenBy(i => i.Id))
-                    .ToList();
-        return withCount.Concat(without).ToList();
+        // 主鍵：日期降序，null 排到最後 (用 DateTime.MinValue.Ticks 並反轉)
+        var byDate = items.OrderByDescending(i => i.CreatedAt?.Date ?? DateTime.MinValue);
+
+        IOrderedEnumerable<LotListItem> withSecondary = mode switch
+        {
+            FolderSortMode.NameAsc    => byDate.ThenBy(i => i.Id, StringComparer.OrdinalIgnoreCase),
+            FolderSortMode.NameDesc   => byDate.ThenByDescending(i => i.Id, StringComparer.OrdinalIgnoreCase),
+            FolderSortMode.TimeNewest => byDate.ThenByDescending(i => i.CreatedAt ?? DateTime.MinValue),
+            FolderSortMode.TimeOldest => byDate.ThenBy(i => i.CreatedAt ?? DateTime.MaxValue),
+            FolderSortMode.CountDesc  => byDate
+                .ThenByDescending(i => i.SubstrateCount ?? -1)
+                .ThenBy(i => i.Id, StringComparer.OrdinalIgnoreCase),
+            FolderSortMode.CountAsc   => byDate
+                .ThenBy(i => i.SubstrateCount ?? int.MaxValue)
+                .ThenBy(i => i.Id, StringComparer.OrdinalIgnoreCase),
+            _ => byDate.ThenBy(i => i.Id, StringComparer.OrdinalIgnoreCase),
+        };
+
+        return withSecondary.ToList();
+    }
+
+    /// <summary>解析某 lot id 的 CreatedAt：合併批 / 虛擬日批 / 一般批分別走不同來源。</summary>
+    private static DateTime? ResolveLotCreatedAt(
+        string id, Dictionary<string, DateTime>? folderTimes,
+        Dictionary<string, MergedLotData> mergedSessions)
+    {
+        if (FileLocator.TryDecodeMergedLot(id, out var mts)) return mts;
+        if (FileLocator.TryDecodeUmkfMaster(id, out _)) return null;  // 由 RebuildLotsForUmkfMode 直接帶入
+        if (FileLocator.TryDecodeVirtualDayLot(id, out var dDate)) return dDate;
+        if (mergedSessions.ContainsKey(id)) return null;  // 已在上方處理；fallback safety
+        return folderTimes != null && folderTimes.TryGetValue(id, out var t) ? t : null;
+    }
+
+    /// <summary>
+    /// 依目前的 <see cref="IsUmkfMergeEnabled"/> 與 <see cref="IncludeRBatches"/> 旗標重建
+    /// <see cref="LotNumbers"/>。UMKF 模式下將原始批號依第 6 碼分組，每組 ≥2 個的合併為單一
+    /// <c>__umkf__</c> 母批；session-only 手動合併批 (<c>__merged__</c>) 一律保留。
+    /// 由 <see cref="OnPartNumberChanged"/>、UMKF 屬性 setter、<see cref="RefreshLotNumbers"/> 共用。
+    /// </summary>
+    private void RebuildLotsForUmkfMode()
+    {
+        if (_rawLotIdsForCurrentPart == null || string.IsNullOrEmpty(SelectedPartNumber))
+        {
+            LotNumbers.Clear();
+            UmkfStatusText = "";
+            RefreshCanMergeLots();
+            return;
+        }
+
+        var folderTimes = FileLocator.GetLotTimestamps(AthleteSysPath, SelectedPartNumber);
+        var existingCounts = LotNumbers.ToDictionary(
+            li => li.Id, li => li.SubstrateCount, StringComparer.OrdinalIgnoreCase);
+
+        // Invalidate any cached UMKF master sessions — toggling IncludeRBatches (or UMKF mode)
+        // can change which children belong to a master, so stale aggregates must be rebuilt.
+        // Manual __merged__ entries are NOT invalidated (those are explicit user snapshots).
+        var staleUmkfKeys = _mergedSessions.Keys
+            .Where(k => FileLocator.TryDecodeUmkfMaster(k, out _))
+            .ToList();
+        foreach (var k in staleUmkfKeys) _mergedSessions.Remove(k);
+
+        _umkfMasterToChildren.Clear();
+        var items = new List<LotListItem>();
+
+        if (IsUmkfMergeEnabled)
+        {
+            var groups = UmkfBatchMerger.GroupLots(_rawLotIdsForCurrentPart, IncludeRBatches);
+            int rawCount = groups.Sum(kv => kv.Value.Count);
+
+            foreach (var g in groups)
+            {
+                if (g.Value.Count >= 2)
+                {
+                    var master = UmkfBatchMerger.FindMasterBatch(g.Value);
+                    var encoded = FileLocator.EncodeUmkfMaster(master);
+                    _umkfMasterToChildren[encoded] = g.Value;
+                    // CreatedAt left null on purpose — folder mtimes are unreliable on backup drives
+                    // (every folder bears the backup timestamp). StartLoadingLotCounts fills the
+                    // date from each child's .summary.csv first-row Date/Time, then takes the max.
+                    items.Add(new LotListItem
+                    {
+                        Id = encoded,
+                        UmkfChildCount = g.Value.Count,
+                        CreatedAt = null,
+                    });
+                }
+                else
+                {
+                    items.Add(BuildPlainLotItem(g.Value[0], folderTimes, existingCounts));
+                }
+            }
+            UmkfStatusText = $"{rawCount}→{items.Count} 批";
+        }
+        else
+        {
+            foreach (var id in _rawLotIdsForCurrentPart)
+                items.Add(BuildPlainLotItem(id, folderTimes, existingCounts));
+            UmkfStatusText = "";
+        }
+
+        // Preserve session-only manual-merge lots (created via 合併批號 dialog).
+        foreach (var kv in _mergedSessions)
+        {
+            if (FileLocator.TryDecodeUmkfMaster(kv.Key, out _)) continue;  // UMKF masters already in items
+            if (items.Any(i => string.Equals(i.Id, kv.Key, StringComparison.OrdinalIgnoreCase))) continue;
+            items.Add(new LotListItem
+            {
+                Id = kv.Key,
+                SubstrateCount = kv.Value.Session.SubstrateCount,
+                CreatedAt = ResolveLotCreatedAt(kv.Key, folderTimes, _mergedSessions),
+            });
+        }
+
+        items = SortLotItems(items, LotSortMode);
+        LotNumbers = new ObservableCollection<LotListItem>(items);
+
+        // If the previously-selected lot is no longer in the rebuilt list (e.g. its raw id got
+        // absorbed into a UMKF master, or UMKF master disappeared after toggling off), clear it.
+        if (!string.IsNullOrEmpty(SelectedLotNumber) &&
+            !items.Any(i => string.Equals(i.Id, SelectedLotNumber, StringComparison.OrdinalIgnoreCase)))
+        {
+            _selectedLotNumber = null;
+            OnPropertyChanged(nameof(SelectedLotNumber));
+        }
+        RefreshCanMergeLots();
+    }
+
+    /// <summary>Helper for <see cref="RebuildLotsForUmkfMode"/>: build a normal LotListItem,
+    /// preserving any already-loaded substrate count and resolving CreatedAt from folder times.</summary>
+    private LotListItem BuildPlainLotItem(
+        string id,
+        Dictionary<string, DateTime>? folderTimes,
+        Dictionary<string, int?> existingCounts)
+    {
+        var item = new LotListItem
+        {
+            Id = id,
+            CreatedAt = ResolveLotCreatedAt(id, folderTimes, _mergedSessions),
+        };
+        if (_mergedSessions.TryGetValue(id, out var mg))
+            item.SubstrateCount = mg.Session.SubstrateCount;
+        else if (existingCounts.TryGetValue(id, out var c) && c.HasValue)
+            item.SubstrateCount = c;
+        return item;
     }
 
     // ── 背景計數任務 ──────────────────────────────────────────────────
@@ -351,8 +557,13 @@ public class MainViewModel : ViewModelBase
     }
 
     /// <summary>
-    /// 背景列舉 LotNumbers 中每個 Lot 的基板筆數，依序回灌。
-    /// 合併批（<c>__merged__</c>）跳過 — 其計數於 RefreshLotNumbers 已直接由快取帶入。
+    /// 背景對 LotNumbers 中每個 Lot 串流其 <c>.summary.csv</c>，取得真實的「基板數」與
+    /// 「首次檢驗日期」，依序回灌到 UI。比 folder enumeration / folder mtime 更精確：
+    /// <list type="bullet">
+    /// <item>能正確算出「只有 .summary.csv 沒有 .afa」的 legacy lot 基板數。</item>
+    /// <item>日期取 CSV 內第一個 row 的 Date/Time，不再受 AFABackup 等 mtime 變動影響。</item>
+    /// </list>
+    /// 合併批跳過 — count 和 date 都已在加入清單時帶入。
     /// </summary>
     private void StartLoadingLotCounts()
     {
@@ -361,25 +572,60 @@ public class MainViewModel : ViewModelBase
         var token = _lotCountCts.Token;
         var path = AthleteSysPath;
         var partNo = SelectedPartNumber;
-        var items = LotNumbers.ToList();
+        var rawIds = _rawLotIdsForCurrentPart?.ToList() ?? new List<string>();
+        // Snapshot child→master mapping so the background task is independent of subsequent mutations.
+        var childToMaster = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in _umkfMasterToChildren)
+            foreach (var child in kv.Value)
+                childToMaster[child] = kv.Key;
         var dispatcher = Application.Current.Dispatcher;
 
-        if (string.IsNullOrEmpty(path) || string.IsNullOrEmpty(partNo) || items.Count == 0) return;
+        if (string.IsNullOrEmpty(path) || string.IsNullOrEmpty(partNo) || rawIds.Count == 0) return;
+
+        // Running per-master tallies (accessed only on UI thread).
+        var masterCount = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var masterMaxDate = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
 
         Task.Run(() =>
         {
-            foreach (var item in items)
+            foreach (var rawId in rawIds)
             {
                 if (token.IsCancellationRequested) return;
-                if (item.SubstrateCount.HasValue) continue;   // 已有值（如合併批）→ 跳過
-                int count;
-                try { count = FileLocator.CountSubstratesForLot(path, partNo, item.Id); }
-                catch { count = 0; }
+
+                (int count, DateTime? date) info;
+                try { info = FileLocator.GetLotInfo(path, partNo, rawId); }
+                catch { info = (0, null); }
+
                 if (token.IsCancellationRequested) return;
                 dispatcher.BeginInvoke(() =>
                 {
                     if (token.IsCancellationRequested) return;
-                    item.SubstrateCount = count;
+
+                    if (childToMaster.TryGetValue(rawId, out var masterId))
+                    {
+                        // UMKF master: accumulate child counts (and pick the newest date).
+                        masterCount[masterId] = (masterCount.TryGetValue(masterId, out var c) ? c : 0) + info.count;
+                        if (info.date.HasValue &&
+                            (!masterMaxDate.TryGetValue(masterId, out var prevDate) || info.date.Value > prevDate))
+                            masterMaxDate[masterId] = info.date.Value;
+
+                        var item = LotNumbers.FirstOrDefault(li => string.Equals(li.Id, masterId, StringComparison.OrdinalIgnoreCase));
+                        if (item != null)
+                        {
+                            item.SubstrateCount = masterCount[masterId];
+                            if (masterMaxDate.TryGetValue(masterId, out var d)) item.CreatedAt = d;
+                        }
+                    }
+                    else
+                    {
+                        // Singleton (UMKF-disabled or solo group): update the lot item directly.
+                        var item = LotNumbers.FirstOrDefault(li => string.Equals(li.Id, rawId, StringComparison.OrdinalIgnoreCase));
+                        if (item != null)
+                        {
+                            item.SubstrateCount = info.count;
+                            if (info.date.HasValue) item.CreatedAt = info.date;
+                        }
+                    }
                 });
             }
             if (!token.IsCancellationRequested)
@@ -387,17 +633,14 @@ public class MainViewModel : ViewModelBase
                 dispatcher.BeginInvoke(() =>
                 {
                     if (token.IsCancellationRequested) return;
-                    if (LotSortMode is FolderSortMode.CountDesc or FolderSortMode.CountAsc)
+                    // 背景全部讀完後重新排序一次（主鍵：CreatedAt 日期降序；次鍵：使用者選的 SortMode）
+                    var current = SelectedLotNumber;
+                    var sorted = SortLotItems(LotNumbers.ToList(), LotSortMode);
+                    LotNumbers = new ObservableCollection<LotListItem>(sorted);
+                    if (current != null && LotNumbers.Any(l => l.Id == current))
                     {
-                        var current = SelectedLotNumber;
-                        var sorted = ApplyLotCountSort(LotNumbers.ToList(), LotSortMode);
-                        LotNumbers = new ObservableCollection<LotListItem>(sorted);
-                        // 保留選取
-                        if (current != null && LotNumbers.Any(l => l.Id == current))
-                        {
-                            _selectedLotNumber = current;
-                            OnPropertyChanged(nameof(SelectedLotNumber));
-                        }
+                        _selectedLotNumber = current;
+                        OnPropertyChanged(nameof(SelectedLotNumber));
                     }
                 });
             }
@@ -418,28 +661,11 @@ public class MainViewModel : ViewModelBase
         }
 
         var current = SelectedLotNumber;
-        var lotIds = FileLocator.GetLotNumbers(AthleteSysPath, SelectedPartNumber, LotSortMode).ToList();
-        // Preserve any session-only merged lots so re-sorting doesn't drop them.
-        foreach (var mergedId in _mergedSessions.Keys)
-            if (!lotIds.Contains(mergedId, StringComparer.OrdinalIgnoreCase))
-                lotIds.Add(mergedId);
+        // Refresh raw lot ids from disk so any new/removed folders are picked up.
+        _rawLotIdsForCurrentPart = FileLocator.GetLotNumbers(AthleteSysPath, SelectedPartNumber, LotSortMode).ToList();
+        RebuildLotsForUmkfMode();
 
-        // 嘗試保留已載入的基板計數（避免重排序時把計數歸零）
-        var existingCounts = LotNumbers.ToDictionary(li => li.Id, li => li.SubstrateCount,
-                                                     StringComparer.OrdinalIgnoreCase);
-        var items = lotIds.Select(id =>
-        {
-            var item = new LotListItem { Id = id };
-            if (_mergedSessions.TryGetValue(id, out var mg))
-                item.SubstrateCount = mg.Session.SubstrateCount;
-            else if (existingCounts.TryGetValue(id, out var c))
-                item.SubstrateCount = c;
-            return item;
-        }).ToList();
-        items = ApplyLotCountSort(items, LotSortMode);
-        LotNumbers = new ObservableCollection<LotListItem>(items);
-
-        if (current != null && lotIds.Contains(current, StringComparer.OrdinalIgnoreCase))
+        if (current != null && LotNumbers.Any(li => string.Equals(li.Id, current, StringComparison.OrdinalIgnoreCase)))
         {
             _selectedLotNumber = current;
             OnPropertyChanged(nameof(SelectedLotNumber));
@@ -449,7 +675,6 @@ public class MainViewModel : ViewModelBase
             _selectedLotNumber = null;
             OnPropertyChanged(nameof(SelectedLotNumber));
         }
-        RefreshCanMergeLots();
         StartLoadingLotCounts();
     }
 
@@ -457,15 +682,27 @@ public class MainViewModel : ViewModelBase
     {
         if (string.IsNullOrEmpty(SelectedPartNumber)) return;
 
-        // Part# change invalidates session-only merged lots from the previous Part#.
+        // Part# change invalidates session-only merged lots + UMKF state from the previous Part#.
         _mergedSessions.Clear();
+        _umkfMasterToChildren.Clear();
 
         var lotIds = FileLocator.GetLotNumbers(AthleteSysPath, SelectedPartNumber, LotSortMode);
-        var items = lotIds.Select(id => new LotListItem { Id = id }).ToList();
-        items = ApplyLotCountSort(items, LotSortMode);
-        LotNumbers = new ObservableCollection<LotListItem>(items);
+        _rawLotIdsForCurrentPart = lotIds.ToList();
+
+        // UMKF auto-detection: both prefix rule AND batch-pattern rule must hold.
+        _suppressUmkfRebuild = true;
+        try
+        {
+            IsUmkfModeAvailable =
+                UmkfBatchMerger.IsUmkfPartNumber(SelectedPartNumber) &&
+                UmkfBatchMerger.HasSpecialBatchPattern(_rawLotIdsForCurrentPart);
+            IsUmkfMergeEnabled = IsUmkfModeAvailable;  // auto-tick when eligible
+            IncludeRBatches = true;                    // reset to default per part
+        }
+        finally { _suppressUmkfRebuild = false; }
+
+        RebuildLotsForUmkfMode();
         SelectedLotNumber = null;
-        RefreshCanMergeLots();
         StartLoadingLotCounts();
 
         // Load master CSV immediately so Substrate Viewer shows coordinate map
@@ -490,8 +727,34 @@ public class MainViewModel : ViewModelBase
     {
         if (string.IsNullOrEmpty(SelectedPartNumber) || string.IsNullOrEmpty(SelectedLotNumber)) return;
 
-        // ── Session-only merged lot: load from in-memory cache, skip all disk I/O ──
-        if (FileLocator.TryDecodeMergedLot(SelectedLotNumber!, out _) &&
+        // ── UMKF master: lazy-build merged session on first selection ──
+        // Capture the id BEFORE the await — SelectedLotNumber may be mutated by concurrent
+        // events while BuildMergedSession is running, and we must cache under the same key
+        // that was selected at entry.
+        if (FileLocator.TryDecodeUmkfMaster(SelectedLotNumber!, out var umkfMasterName) &&
+            !_mergedSessions.ContainsKey(SelectedLotNumber!) &&
+            _umkfMasterToChildren.TryGetValue(SelectedLotNumber!, out var umkfChildren))
+        {
+            var umkfCacheKey = SelectedLotNumber!;
+            try
+            {
+                StatusText = $"Building UMKF master '{umkfMasterName}'...";
+                var built = await Task.Run(() => BuildMergedSession(umkfChildren));
+                built.Session.LotName = $"{umkfMasterName} (UMKF合併 {umkfChildren.Count} 批)";
+                _mergedSessions[umkfCacheKey] = built;
+            }
+            catch (Exception ex)
+            {
+                StatusText = $"UMKF合併失敗: {ex.Message}";
+                MessageBox.Show(ex.ToString(), "UMKF合併", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+        }
+
+        // ── Session-only merged lot OR UMKF master (now cached): load from in-memory, skip disk I/O ──
+        bool isVirtualMerged = FileLocator.TryDecodeMergedLot(SelectedLotNumber!, out _) ||
+                               FileLocator.TryDecodeUmkfMaster(SelectedLotNumber!, out _);
+        if (isVirtualMerged &&
             _mergedSessions.TryGetValue(SelectedLotNumber!, out var merged))
         {
             try
@@ -561,6 +824,30 @@ public class MainViewModel : ViewModelBase
             return;
         }
 
+        // ── Guard: virtual lot ids (__umkf__ / __merged__) must NEVER reach the disk-loading
+        // branch — their data lives in _mergedSessions or nowhere. Falling through with such an
+        // id would feed it to FindSummaryCsv → Path.Combine(partDir, lotNo) which is harmless
+        // (lotNo is non-null) but would synthesize a bogus filesystem path. More critically,
+        // we also catch the case where SelectedLotNumber was mutated to null by a concurrent
+        // event (e.g. background sort replacing LotNumbers transiently clears ComboBox value)
+        // during the awaits above — Path.Combine throws ArgumentNullException on a null path2.
+        if (string.IsNullOrEmpty(SelectedLotNumber) || string.IsNullOrEmpty(SelectedPartNumber))
+        {
+            StatusText = "";
+            return;
+        }
+        if (FileLocator.TryDecodeMergedLot(SelectedLotNumber!, out _) ||
+            FileLocator.TryDecodeUmkfMaster(SelectedLotNumber!, out _))
+        {
+            StatusText = "虛擬批號暫存資料不存在 — 請取消勾選 UMKF 合併或重新整理後再試。";
+            return;
+        }
+
+        // Snapshot lot/part to locals so the rest of this branch is immune to property
+        // mutations across the disk-load awaits.
+        var lotIdLocal = SelectedLotNumber!;
+        var partNoLocal = SelectedPartNumber!;
+
         try
         {
             StatusText = "Loading...";
@@ -568,7 +855,7 @@ public class MainViewModel : ViewModelBase
             var loaded = new List<string>();
 
             // --- Load Master ---
-            var masterCheck = FileLocator.FindMasterCsv(AthleteSysPath, SelectedPartNumber);
+            var masterCheck = FileLocator.FindMasterCsv(AthleteSysPath, partNoLocal);
             if (masterCheck.Found)
             {
                 _masterBalls = await Task.Run(() => MasterCsvParser.Parse(masterCheck.ActualPath!));
@@ -585,8 +872,8 @@ public class MainViewModel : ViewModelBase
             }
 
             // --- Load Summary (with virtual-day-lot branch) ---
-            bool isVirtualDay = FileLocator.TryDecodeVirtualDayLot(SelectedLotNumber, out var virtualDate);
-            var summaryCheck = FileLocator.FindSummaryCsv(AthleteSysPath, SelectedPartNumber, SelectedLotNumber);
+            bool isVirtualDay = FileLocator.TryDecodeVirtualDayLot(lotIdLocal, out var virtualDate);
+            var summaryCheck = FileLocator.FindSummaryCsv(AthleteSysPath, partNoLocal, lotIdLocal);
             LotSession? loadedSession = null;
             if (summaryCheck.Found)
             {
@@ -601,11 +888,11 @@ public class MainViewModel : ViewModelBase
 
             // --- Substrate folders (LEFT JOIN source-of-truth for new format) ---
             var substrateFolders = await Task.Run(() =>
-                FileLocator.EnumerateSubstratesForLot(AthleteSysPath, SelectedPartNumber, SelectedLotNumber));
+                FileLocator.EnumerateSubstratesForLot(AthleteSysPath, partNoLocal, lotIdLocal));
 
             // For virtual-day / new-format real lots, augment session.Rows with stub rows for any
             // substrate folder that has no matching summary entry yet.
-            var session = loadedSession ?? new LotSession { LotName = FileLocator.FormatLotForDisplay(SelectedLotNumber) };
+            var session = loadedSession ?? new LotSession { LotName = FileLocator.FormatLotForDisplay(lotIdLocal) };
             if (substrateFolders.Count > 0)
             {
                 var existing = session.Rows.Select(r => r.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -624,7 +911,7 @@ public class MainViewModel : ViewModelBase
                 session.SubstrateCount = session.Rows.Select(r => r.Name)
                                                      .Distinct(StringComparer.OrdinalIgnoreCase).Count();
                 if (session.LotName.Length == 0)
-                    session.LotName = FileLocator.FormatLotForDisplay(SelectedLotNumber);
+                    session.LotName = FileLocator.FormatLotForDisplay(lotIdLocal);
             }
 
             LotMonitor.Load(session);
@@ -634,7 +921,7 @@ public class MainViewModel : ViewModelBase
             // --- Load .map files via FileLocator (handles both flat-legacy and timestamp-folder layouts) ---
             List<Models.SubstrateMap> substrateMaps = new();
             var mapFiles = await Task.Run(() =>
-                FileLocator.EnumerateMapFilesForLot(AthleteSysPath, SelectedPartNumber, SelectedLotNumber));
+                FileLocator.EnumerateMapFilesForLot(AthleteSysPath, partNoLocal, lotIdLocal));
             if (mapFiles.Count > 0)
             {
                 substrateMaps = await Task.Run(() =>
@@ -650,14 +937,14 @@ public class MainViewModel : ViewModelBase
             // --- Load Defect Map: calculate from .map files (INSPECTION=1 only); fall back to map.csv ---
             if (substrateMaps.Count > 0)
             {
-                var mapData = DieMapCalculator.Calculate(substrateMaps, SelectedLotNumber, SelectedPartNumber);
+                var mapData = DieMapCalculator.Calculate(substrateMaps, lotIdLocal, partNoLocal);
                 DefectMap.Load(mapData);
                 if (mapData != null)
                     loaded.Add($"DefectMap(calculated from {substrateMaps.Count} .map)");
             }
             else
             {
-                var mapCsvCheck = FileLocator.FindMapCsv(AthleteSysPath, SelectedLotNumber);
+                var mapCsvCheck = FileLocator.FindMapCsv(AthleteSysPath, lotIdLocal);
                 if (mapCsvCheck.Found)
                 {
                     var mapData = await Task.Run(() => MapCsvParser.Parse(mapCsvCheck.ActualPath!));
@@ -673,14 +960,14 @@ public class MainViewModel : ViewModelBase
             // --- Load Recurring Defects: Phase 1 from .map (fast) ---
             if (substrateMaps.Count > 0)
             {
-                var recurringData = RecurringDefectCalculator.CalculateFromMaps(substrateMaps, SelectedLotNumber);
+                var recurringData = RecurringDefectCalculator.CalculateFromMaps(substrateMaps, lotIdLocal);
                 RecurringDefect.Load(recurringData, _masterBalls);
 
                 // Phase 2: enrich with ball-level data from .afa files (background)
                 if (recurringData != null)
                 {
-                    var partNo = SelectedPartNumber!;
-                    var lotNo  = SelectedLotNumber!;
+                    var partNo = partNoLocal;
+                    var lotNo  = lotIdLocal;
                     var maps   = substrateMaps.ToList();
                     _ = Task.Run(() =>
                     {
@@ -701,7 +988,7 @@ public class MainViewModel : ViewModelBase
             }
 
             // --- Update Settings file status ---
-            Settings.UpdateFileStatuses(AthleteSysPath, SelectedPartNumber, SelectedLotNumber);
+            Settings.UpdateFileStatuses(AthleteSysPath, partNoLocal, lotIdLocal);
 
             // --- Build status text ---
             var sb = new StringBuilder();
@@ -869,9 +1156,12 @@ public class MainViewModel : ViewModelBase
         // (Refresh*Numbers 預設會把舊計數帶到新 item，避免排序時閃爍；Reload 場景需要強制清除)
         foreach (var p in PartNumbers) p.LotCount = null;
         foreach (var l in LotNumbers)
-            // 合併批的 SubstrateCount 由快取維護，不可清掉；只清磁碟批的
-            if (!IsMergedLot(l.Id))
-                l.SubstrateCount = null;
+        {
+            // 合併批的 SubstrateCount / CreatedAt 由快取維護，不可清掉；只清磁碟批的
+            if (IsMergedLot(l.Id)) continue;
+            l.SubstrateCount = null;
+            l.CreatedAt = null;   // 讓背景重新從 CSV 取最新的 FirstDate
+        }
 
         // Re-enumerate Part# folders (catches newly-created Parts)
         RefreshPartNumbers();
@@ -926,7 +1216,7 @@ public class MainViewModel : ViewModelBase
             return;
         }
 
-        var dialog = new Views.LotMergeDialog(LotNumbers.Select(li => li.Id))
+        var dialog = new Views.LotMergeDialog(LotNumbers)
             { Owner = Application.Current.MainWindow };
         if (dialog.ShowDialog() != true) return;
         var picks = dialog.SelectedLotIds;
@@ -944,10 +1234,13 @@ public class MainViewModel : ViewModelBase
 
             var mergedId = FileLocator.EncodeMergedLot(DateTime.Now);
             _mergedSessions[mergedId] = merged;
+            // Append directly (without re-sorting the whole list — preserve current order;
+            // user can re-sort to bring the merged lot into its date group if desired).
             LotNumbers.Add(new LotListItem
             {
                 Id = mergedId,
-                SubstrateCount = merged.Session.SubstrateCount
+                SubstrateCount = merged.Session.SubstrateCount,
+                CreatedAt = FileLocator.TryDecodeMergedLot(mergedId, out var mergeTs) ? mergeTs : DateTime.Now,
             });
             RefreshCanMergeLots();
             SelectedLotNumber = mergedId;     // triggers OnLotNumberChanged → merged branch
@@ -964,14 +1257,32 @@ public class MainViewModel : ViewModelBase
     /// and bundles them into a <see cref="MergedLotData"/>. Each loaded <c>SubstrateMap</c>
     /// is tagged with <c>SourceLotId</c> so downstream AFA lookups can resolve through the
     /// original lot's folder. No files are modified.
+    /// <para>If <paramref name="lotIds"/> contains UMKF master ids (<c>__umkf__</c>), they are
+    /// expanded to their child lot ids first — this is what makes 「合併批號」 dialog able to
+    /// further merge already-auto-merged masters.</para>
     /// </summary>
     private MergedLotData BuildMergedSession(IReadOnlyList<string> lotIds)
     {
+        // Expand UMKF masters to their constituent children before any disk I/O.
+        var expanded = new List<string>();
+        foreach (var id in lotIds)
+        {
+            if (FileLocator.TryDecodeUmkfMaster(id, out _) &&
+                _umkfMasterToChildren.TryGetValue(id, out var kids))
+            {
+                expanded.AddRange(kids);
+            }
+            else
+            {
+                expanded.Add(id);
+            }
+        }
+
         var mergedRows = new List<SummaryRow>();
         var mergedMaps = new List<Models.SubstrateMap>();
         var sources = new List<string>();
 
-        foreach (var lotId in lotIds)
+        foreach (var lotId in expanded)
         {
             // --- Summary rows ---
             var chk = FileLocator.FindSummaryCsv(AthleteSysPath, SelectedPartNumber!, lotId);
