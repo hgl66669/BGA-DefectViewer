@@ -204,37 +204,66 @@ public class SimulationCanvas : FrameworkElement
             DrawBlobDonut(pBack, stridePixels, w, h, blob, bg);
         }
 
-        // ── Noise pass ── Signal-dependent Gaussian jitter. σ²(I) =
-        // readNoise² + I·shotCoef, so dark areas (pad/bg) carry low σ while
-        // the bright blob rim gets photon shot noise. Matches the per-pixel
-        // grain visible in real camera frames and means subsequent binarization
-        // will see the right amount of noise per intensity. Deterministic
-        // from (sx, sy, Seed).
+        // ── Noise pass ── Signal-dependent Gaussian jitter sampled per
+        // CAMERA pixel (not per screen pixel). Multiple screen pixels that
+        // map to the same camera pixel share one noise sample — noise grain
+        // is therefore the same physical size as a rendering pixel, invariant
+        // under zoom, and is the only granularity Stage 2 binarization will
+        // see. Per-pixel cost: incremental dx/dy add, one floor, one byte
+        // table lookup (sigma + Gaussian), one mul-div.
+        //   σ²(I) = readNoise² + I·shotCoef  (read floor + photon shot).
         int readNoise = p.SensorReadNoise;
         double shotCoef = p.SensorShotNoise;
-        if (readNoise > 0 || shotCoef > 0)
+        if ((readNoise > 0 || shotCoef > 0) && p.MmPerPixel > 0)
         {
+            // Pre-compute σ per intensity — kills per-pixel sqrt.
             double readVar = (double)readNoise * readNoise;
+            Span<double> sigmaLut = stackalloc double[256];
+            for (int i = 0; i < 256; i++) sigmaLut[i] = Math.Sqrt(readVar + i * shotCoef);
+
+            // Affine: data = origin + sx·dxStep (and same for y). Computed
+            // once from two ScreenToData probes; inner loop only adds.
+            double invMmPerPx = 1.0 / p.MmPerPixel;
+            var (dx0, dy0) = _transform.ScreenToData(0.5, 0.5);
+            var (dx1, _)   = _transform.ScreenToData(1.5, 0.5);
+            var (_, dyR1)  = _transform.ScreenToData(0.5, 1.5);
+            double dxStep = dx1 - dx0;
+            double dyStep = dyR1 - dy0;
+
             uint seedHash = (uint)p.Seed * 2654435761u + 0xDEADBEEFu;
             uint* pUint = (uint*)pBack;
             for (int sy = 0; sy < h; sy++)
             {
+                int camY = (int)Math.Floor((dy0 + sy * dyStep) * invMmPerPx);
+                uint rowHash = ((uint)camY * 0x85EBCA6Bu) ^ seedHash;
                 uint* rowPtr = pUint + sy * stridePixels;
-                uint rowHash = ((uint)sy * 0x85EBCA6Bu) ^ seedHash;
+
+                double dxHere = dx0;
+                int prevCamX = int.MinValue;
+                sbyte cellSample = 0;
                 for (int sx = 0; sx < w; sx++)
                 {
-                    uint hh = (uint)sx * 0x9E3779B9u ^ rowHash;
-                    hh ^= hh >> 16; hh *= 0x7FEB352Du;
-                    uint existing = rowPtr[sx];
-                    int intensity = (int)(existing & 0xFF);
-                    double sigma = Math.Sqrt(readVar + intensity * shotCoef);
-                    if (sigma < 1e-6) continue;
-                    int noise = (int)(GaussianLUT[hh & 0xFF] * sigma / 10.0);
-                    if (noise == 0) continue;
-                    int v = intensity + noise;
-                    if (v < 0) v = 0;
-                    else if (v > 255) v = 255;
-                    rowPtr[sx] = MakeGrayPixel((byte)v);
+                    int camX = (int)Math.Floor(dxHere * invMmPerPx);
+                    if (camX != prevCamX)
+                    {
+                        uint hh = (uint)camX * 0x9E3779B9u ^ rowHash;
+                        hh ^= hh >> 16; hh *= 0x7FEB352Du;
+                        cellSample = GaussianLUT[hh & 0xFF];
+                        prevCamX = camX;
+                    }
+                    if (cellSample != 0)
+                    {
+                        int intensity = (int)(rowPtr[sx] & 0xFFu);
+                        int noise = (int)(cellSample * sigmaLut[intensity] / 10.0);
+                        if (noise != 0)
+                        {
+                            int v = intensity + noise;
+                            if (v < 0) v = 0;
+                            else if (v > 255) v = 255;
+                            rowPtr[sx] = MakeGrayPixel((byte)v);
+                        }
+                    }
+                    dxHere += dxStep;
                 }
             }
         }
@@ -617,8 +646,10 @@ public class SimulationCanvas : FrameworkElement
             {
                 var (dx, dy) = _transform.ScreenToData(sx + 0.5, sy + 0.5);
                 // Snap to camera pixel-grid centre (same as blob pass).
-                double cdx = (Math.Floor(dx * invMmPerPx) + 0.5) * mmPerPx;
-                double cdy = (Math.Floor(dy * invMmPerPx) + 0.5) * mmPerPx;
+                int camX = (int)Math.Floor(dx * invMmPerPx);
+                int camY = (int)Math.Floor(dy * invMmPerPx);
+                double cdx = (camX + 0.5) * mmPerPx;
+                double cdy = (camY + 0.5) * mmPerPx;
                 double ddx = cdx - cx;
                 double ddy = cdy - cy;
                 double d2 = ddx * ddx + ddy * ddy;
@@ -657,10 +688,11 @@ public class SimulationCanvas : FrameworkElement
                 int v = bg - (int)(padDarkness * floor);
                 if (texSigma > 0)
                 {
-                    // 2×2-block-aligned hash gives coarser spatial frequency
-                    // than per-pixel — looks like "patches" not just grain.
-                    uint th = ((uint)(sx >> 1) * 0x6C8E9CF5u)
-                            ^ ((uint)(sy >> 1) * 0x47A4D87Bu)
+                    // Hash by CAMERA-pixel index — texture grain is the same
+                    // physical size as a rendering pixel (invariant under zoom
+                    // and matches noise pass granularity).
+                    uint th = ((uint)camX * 0x6C8E9CF5u)
+                            ^ ((uint)camY * 0x47A4D87Bu)
                             ^ padHash;
                     th ^= th >> 16; th *= 0x7FEB352Du;
                     v += (int)(GaussianLUT[th & 0xFF] * texSigma / 10.0);
