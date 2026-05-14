@@ -171,13 +171,14 @@ public static class RecurringDefectCalculator
                     int dominantCode = acc.DefectCodeCounts.MaxBy(p => p.Value).Key;
                     return new RecurringBallInfo
                     {
-                        BallId          = kv.Key.Item3,
-                        X               = acc.X,
-                        Y               = acc.Y,
-                        Diameter        = acc.Diameter,
-                        Count           = acc.Count,
-                        Judge           = DefectTypes.GetName(dominantCode),
-                        DefectCodeCounts = new Dictionary<int, int>(acc.DefectCodeCounts)
+                        BallId             = kv.Key.Item3,
+                        X                  = acc.X,
+                        Y                  = acc.Y,
+                        Diameter           = acc.Diameter,
+                        Count              = acc.Count,
+                        Judge              = DefectTypes.GetName(dominantCode),
+                        DominantDefectCode = dominantCode,
+                        DefectCodeCounts   = new Dictionary<int, int>(acc.DefectCodeCounts)
                     };
                 }).OrderByDescending(b => b.Count).ToList();
 

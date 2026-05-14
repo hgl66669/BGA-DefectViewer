@@ -11,6 +11,13 @@ public class RecurringBallInfo
     public int Count { get; set; }
     /// <summary>Most frequently observed defect type name across all substrates.</summary>
     public string Judge { get; set; } = "";
+    /// <summary>
+    /// Numeric defect code paired with <see cref="Judge"/>. Used by the detail
+    /// grid to colour the Judge cell background (same palette as SubstrateViewer).
+    /// Filter-aware: when the user filters by defect type, this reflects the
+    /// dominant code AMONG SELECTED TYPES, not the absolute dominant.
+    /// </summary>
+    public int DominantDefectCode { get; set; }
     /// <summary>Per-defect-code substrate counts: code → how many substrates had that defect here.</summary>
     public Dictionary<int, int> DefectCodeCounts { get; set; } = new();
 
