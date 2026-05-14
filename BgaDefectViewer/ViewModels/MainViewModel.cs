@@ -233,6 +233,7 @@ public class MainViewModel : ViewModelBase
         LotMonitor.RowSingleClicked += OnLotMonitorRowSingleClicked;
         LotMonitor.MergeLotsRequested += OnMergeLotsRequested;
         LotMonitor.MountFilterRequested += OnMountFilterRequested;
+        LotMonitor.ExportReportRequested += OnExportReportRequested;
 
         SubstrateMap.SubstrateSelected += OnSubstrateMapSelected;
         SubstrateMap.SubstrateDoubleClicked += OnSubstrateMapDoubleClicked;
@@ -1192,6 +1193,44 @@ public class MainViewModel : ViewModelBase
     private void RefreshCanMergeLots()
     {
         LotMonitor.CanMergeLots = LotNumbers.Count(li => !IsMergedLot(li.Id)) >= 2;
+    }
+
+    /// <summary>
+    /// 開啟另存新檔對話框，把 LotMonitor 目前可見狀態（已套用合併批 / 特殊統計 /
+    /// Yield 選項 / Cycle Time）匯出成 CSV 報表。
+    /// </summary>
+    private void OnExportReportRequested()
+    {
+        var input = LotMonitor.BuildExportInput();
+        if (input.Rows.Count == 0)
+        {
+            MessageBox.Show("目前沒有可匯出的 row。", "輸出報表",
+                            MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var dialog = new Microsoft.Win32.SaveFileDialog
+        {
+            Title = "輸出 Lot Monitor 報表",
+            Filter = "CSV 檔 (*.csv)|*.csv|所有檔案 (*.*)|*.*",
+            DefaultExt = ".csv",
+            FileName = LotReportExporter.SuggestedFileName(input.LotDisplayName),
+            OverwritePrompt = true,
+            AddExtension = true,
+        };
+        if (dialog.ShowDialog() != true) return;
+
+        try
+        {
+            LotReportExporter.WriteCsv(dialog.FileName, input);
+            StatusText = $"報表已輸出: {dialog.FileName}  ({input.Rows.Count} rows / {input.SubstrateCount} substrates)";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"輸出報表失敗: {ex.Message}";
+            MessageBox.Show(ex.ToString(), "輸出報表失敗",
+                            MessageBoxButton.OK, MessageBoxImage.Error);
+        }
     }
 
     /// <summary>

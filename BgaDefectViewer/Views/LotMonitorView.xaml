@@ -36,6 +36,9 @@
                     </Style>
                 </Button.Style>
             </Button>
+            <Button Content="輸出報表" Command="{Binding ExportReportCommand}"
+                    Margin="8,0,0,0" Padding="10,2" VerticalAlignment="Center"
+                    ToolTip="把目前顯示的資料 (含合併批 / 特殊統計 / Yield 選項) 匯出成 CSV，格式仿原始 .summary.csv"/>
         </StackPanel>
 
         <!-- LOT Summary (bottom) -->
