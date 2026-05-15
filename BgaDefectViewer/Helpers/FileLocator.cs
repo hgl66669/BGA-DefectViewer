@@ -851,18 +851,48 @@ public static class FileLocator
     /// </list>
     /// </para>
     /// </summary>
-    public static (int Count, DateTime? FirstDate) GetLotInfo(
+    public static (int Count, DateTime? FirstDate, bool HasDetail) GetLotInfo(
         string athSysPath, string partNo, string lot)
     {
-        // 合併批：count 由 VM 帶入；date 從 id 解碼
-        if (TryDecodeMergedLot(lot, out var mts)) return (0, mts);
+        // 合併批：count 由 VM 帶入；date 從 id 解碼；session-only 一律當作有 detail（避免顯示「僅摘要」標註）
+        if (TryDecodeMergedLot(lot, out var mts)) return (0, mts, true);
 
         var chk = FindSummaryCsv(athSysPath, partNo, lot);
-        if (!chk.Found) return (0, null);
+        if (!chk.Found) return (0, null, false);
 
         DateTime? dateFilter = TryDecodeVirtualDayLot(lot, out var dDate) ? dDate : null;
 
-        return StreamSummaryInfo(chk.ActualPath!, dateFilter);
+        var (count, firstDate) = StreamSummaryInfo(chk.ActualPath!, dateFilter);
+        return (count, firstDate, HasDetailData(athSysPath, partNo, lot));
+    }
+
+    /// <summary>
+    /// 該批是否含有逐片基板的詳細資料（.afa / .map）。若僅有 .summary.csv 而 lot 資料夾內無
+    /// .afa/.map，則為 <c>false</c>，UI 會於下拉選單追加「(僅摘要)」小註記提示使用者該批
+    /// 無法載入 Substrate Viewer / Defect Map / Map 級的逐片資訊。
+    /// <para>合併批 (<c>__merged__</c>) / UMKF 母批 (<c>__umkf__</c>) 為虛擬聚合，個別物理資料夾
+    /// 由 caller 自行展開判斷；此處對它們回傳 <c>true</c> 以避免顯示誤導性註記（聚合層級的
+    /// HasDetail 由背景任務在處理子批時累加判定）。</para>
+    /// </summary>
+    public static bool HasDetailData(string athSysPath, string partNo, string lot)
+    {
+        if (TryDecodeMergedLot(lot, out _)) return true;
+        if (TryDecodeUmkfMaster(lot, out _)) return true;
+
+        foreach (var folder in ResolveLotFolders(athSysPath, partNo, lot))
+        {
+            try
+            {
+                if (!Directory.Exists(folder)) continue;
+                if (Directory.EnumerateFiles(folder, "*.afa").Any()) return true;
+                if (Directory.EnumerateFiles(folder, "*.map").Any()) return true;
+            }
+            catch
+            {
+                // 權限／I/O 失敗 → 不視為有 detail，繼續下一個 folder
+            }
+        }
+        return false;
     }
 
     /// <summary>
