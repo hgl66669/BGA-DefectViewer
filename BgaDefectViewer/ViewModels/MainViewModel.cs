@@ -1344,6 +1344,11 @@ public class MainViewModel : ViewModelBase
                 SubstrateCount = merged.Session.SubstrateCount,
                 CreatedAt = FileLocator.TryDecodeMergedLot(mergedId, out var mergeTs) ? mergeTs : DateTime.Now,
             });
+            // 合併批是附加在末尾，若 _allLotNumbers 超過 page size 且尚未展開，它會落在分頁
+            // 隱藏區。隨後 SelectedLotNumber=mergedId 時 ComboBox 在可見項找不到它，TwoWay
+            // 綁定會把選取回退為原批號 → 自動展開讓新批可見並可被選取。
+            if (!_lotsExpanded && _allLotNumbers.Count > LotPageSize)
+                _lotsExpanded = true;
             RefreshLotNumbersView();
             RefreshCanMergeLots();
             SelectedLotNumber = mergedId;     // triggers OnLotNumberChanged → merged branch
