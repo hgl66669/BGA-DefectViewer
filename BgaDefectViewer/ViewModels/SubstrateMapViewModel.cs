@@ -42,7 +42,7 @@ public class SubstrateMapViewModel : ViewModelBase
     /// <summary>使用者雙擊多 Die 基板中的某個 Die（→ 切到 Substrate Viewer，並過濾至該 Die）</summary>
     public event Action<SubstrateMap, int, int>? DieDoubleClicked;
     /// <summary>使用者單擊某片基板（→ 通知 Lot Monitor 同步選擇）</summary>
-    public event Action<string>? SubstrateSelected;
+    public event Action<SubstrateMap>? SubstrateSelected;
 
     // ── 基板清單 ──────────────────────────────────────────────────────
     private ObservableCollection<SubstrateMap> _substrateMaps = new();
@@ -141,12 +141,15 @@ public class SubstrateMapViewModel : ViewModelBase
     }
 
     /// <summary>由 Lot Monitor 單擊觸發，高亮對應片</summary>
-    public void HighlightSubstrate(string substrateId)
+    public void HighlightSubstrate(SummaryRow row)
     {
+        // SourceLotId disambiguates merged-lot substrates that share a SubstrateId
+        // (e.g., Leg1-10 and Leg2-10 both extract to "10"). Null on both sides for regular lots.
         var target = SubstrateMaps.FirstOrDefault(m =>
-            m.SubstrateId.EndsWith(substrateId, StringComparison.OrdinalIgnoreCase)
-            || substrateId.EndsWith(m.SubstrateId, StringComparison.OrdinalIgnoreCase)
-            || m.SubstrateId == substrateId);
+            m.SourceLotId == row.SourceLotId
+            && (m.SubstrateId.EndsWith(row.SubstrateId, StringComparison.OrdinalIgnoreCase)
+                || row.SubstrateId.EndsWith(m.SubstrateId, StringComparison.OrdinalIgnoreCase)
+                || m.SubstrateId == row.SubstrateId));
 
         if (target != null)
             SelectedSubstrateMap = target;
@@ -157,7 +160,7 @@ public class SubstrateMapViewModel : ViewModelBase
     {
         if (map == null) return;
         SelectedSubstrateMap = map;
-        SubstrateSelected?.Invoke(map.SubstrateId);
+        SubstrateSelected?.Invoke(map);
     }
 
     /// <summary>由 View code-behind 呼叫（雙擊整片基板，單 Die 模式）</summary>

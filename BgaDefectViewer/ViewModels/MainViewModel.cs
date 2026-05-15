@@ -1098,24 +1098,27 @@ public class MainViewModel : ViewModelBase
     /// <summary>Lot Monitor 單擊 → 高亮 Substrate Map</summary>
     private void OnLotMonitorRowSingleClicked(SummaryRow row)
     {
-        SubstrateMap.HighlightSubstrate(row.SubstrateId);
+        SubstrateMap.HighlightSubstrate(row);
     }
 
     /// <summary>Substrate Map 單擊 → 同步 Lot Monitor 選擇</summary>
-    private void OnSubstrateMapSelected(string substrateId)
+    private void OnSubstrateMapSelected(Models.SubstrateMap map)
     {
         if (_programmaticNav) return;   // don't sync back during programmatic navigation
-        LotMonitor.SelectBySubstrateId(substrateId);
+        LotMonitor.SelectByMap(map);
     }
 
     /// <summary>Lot Monitor 雙擊 → 切到 Substrate Map (Tab 2) 並自動選取基板與對應 INSP</summary>
     private void OnSubstrateRowDoubleClicked(SummaryRow row)
     {
-        // Use same fuzzy matching as HighlightSubstrate (EndsWith handles prefix/suffix differences)
+        // SourceLotId disambiguates merged-lot substrates that share a SubstrateId (e.g.
+        // Leg1-10 and Leg2-10 both extract to "10"). Both sides are null for regular lots
+        // so the comparison is a no-op there.
         var map = SubstrateMap.SubstrateMaps.FirstOrDefault(m =>
-            m.SubstrateId.EndsWith(row.SubstrateId, StringComparison.OrdinalIgnoreCase)
-            || row.SubstrateId.EndsWith(m.SubstrateId, StringComparison.OrdinalIgnoreCase)
-            || m.SubstrateId == row.SubstrateId);
+            m.SourceLotId == row.SourceLotId
+            && (m.SubstrateId.EndsWith(row.SubstrateId, StringComparison.OrdinalIgnoreCase)
+                || row.SubstrateId.EndsWith(m.SubstrateId, StringComparison.OrdinalIgnoreCase)
+                || m.SubstrateId == row.SubstrateId));
 
         if (map == null)
         {
@@ -1426,7 +1429,13 @@ public class MainViewModel : ViewModelBase
             if (!gotSomething) continue;
 
             if (part != null && part.Rows.Count > 0)
+            {
+                // Stamp SourceLotId on rows (mirrors `m.SourceLotId = lotId` above for maps).
+                // Lets downstream matchers disambiguate substrates with the same numeric id
+                // across source lots (e.g., Leg1-10 vs Leg2-10).
+                foreach (var r in part.Rows) r.SourceLotId = lotId;
                 mergedRows.AddRange(part.Rows);
+            }
             mergedMaps.AddRange(partMaps);
             sources.Add(FileLocator.FormatLotForDisplay(lotId));
         }
