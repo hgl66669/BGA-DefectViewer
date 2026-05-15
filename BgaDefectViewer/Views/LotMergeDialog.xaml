@@ -27,23 +27,65 @@
 
         <ListBox ItemsSource="{Binding Source={StaticResource ItemsGroupedView}}"
                  HorizontalContentAlignment="Stretch"
-                 ScrollViewer.VerticalScrollBarVisibility="Auto">
+                 ScrollViewer.VerticalScrollBarVisibility="Auto"
+                 SelectionChanged="LotList_SelectionChanged">
             <ListBox.GroupStyle>
                 <GroupStyle>
                     <GroupStyle.HeaderTemplate>
                         <DataTemplate>
+                            <!-- 「載入更多」哨兵自成一組 (DateGroupKey="__loadmore_group__")；
+                                 隱藏其 header 讓哨兵以無分組標題形式停在列表末端。 -->
                             <TextBlock Text="{Binding Name}"
                                        Foreground="#999" FontSize="11"
-                                       Padding="6,4,6,2"/>
+                                       Padding="6,4,6,2">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Name}" Value="__loadmore_group__">
+                                                <Setter Property="Visibility" Value="Collapsed"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
                         </DataTemplate>
                     </GroupStyle.HeaderTemplate>
                 </GroupStyle>
             </ListBox.GroupStyle>
             <ListBox.ItemTemplate>
                 <DataTemplate>
-                    <CheckBox IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}"
-                              Content="{Binding DisplayName}"
-                              Margin="2"/>
+                    <!-- 一般項目顯示 CheckBox；哨兵以強調色 TextBlock 提示「載入更多」，
+                         CheckBox 被 DataTrigger 隱藏。實際展開動作在 ListBox.SelectionChanged
+                         中處理（偵測 SelectedItem.IsLoadMore）。-->
+                    <Grid Margin="2">
+                        <CheckBox IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}"
+                                  Content="{Binding DisplayName}">
+                            <CheckBox.Style>
+                                <Style TargetType="CheckBox">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsLoadMore}" Value="True">
+                                            <Setter Property="Visibility" Value="Collapsed"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </CheckBox.Style>
+                        </CheckBox>
+                        <TextBlock Text="{Binding DisplayName}"
+                                   Foreground="#0064C8" FontWeight="SemiBold"
+                                   HorizontalAlignment="Center"
+                                   Padding="4,4"
+                                   Visibility="Collapsed">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding IsLoadMore}" Value="True">
+                                            <Setter Property="Visibility" Value="Visible"/>
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </Grid>
                 </DataTemplate>
             </ListBox.ItemTemplate>
         </ListBox>

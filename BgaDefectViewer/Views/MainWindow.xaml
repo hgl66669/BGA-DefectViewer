@@ -73,9 +73,22 @@
                     <GroupStyle>
                         <GroupStyle.HeaderTemplate>
                             <DataTemplate>
+                                <!-- 「載入更多」哨兵自成一組 (DateGroupKey="__loadmore_group__")；
+                                     此處用 DataTrigger 隱藏該組 header，讓哨兵項目以無分組標題的形式
+                                     貼在列表末端，避免出現一個無意義的灰字標題。 -->
                                 <TextBlock Text="{Binding Name}"
                                            Foreground="#999" FontSize="11"
-                                           Padding="6,4,6,2"/>
+                                           Padding="6,4,6,2">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding Name}" Value="__loadmore_group__">
+                                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
                             </DataTemplate>
                         </GroupStyle.HeaderTemplate>
                     </GroupStyle>

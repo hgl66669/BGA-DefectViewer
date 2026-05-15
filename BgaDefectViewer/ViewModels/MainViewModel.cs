@@ -47,6 +47,12 @@ public class MainViewModel : ViewModelBase
     private readonly Dictionary<string, List<string>> _umkfMasterToChildren =
         new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Raw lot id → 是否有 .afa/.map 詳細檔。背景任務填入；UMKF 切換 / 排序變化時
+    /// <see cref="RebuildLotsForUmkfMode"/> 從此 cache 回算母批與 singleton 的 IsSummaryOnly，
+    /// 不需重新跑背景任務。Path / Part# 變化時清空。</summary>
+    private readonly Dictionary<string, bool> _lotDetailCache =
+        new(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>Suppress the rebuild side-effects of the UMKF property setters during the
     /// part-number-change transition (we batch-set several flags then call rebuild once).</summary>
     private bool _suppressUmkfRebuild;
@@ -103,6 +109,13 @@ public class MainViewModel : ViewModelBase
         get => _selectedPartNumber;
         set
         {
+            // 「載入更多」哨兵被點擊：展開分頁、把目前選取值 push 回 ComboBox（避免哨兵停留為選取狀態）
+            if (value == LoadMoreSentinel.Id)
+            {
+                LoadMorePartNumbers();
+                OnPropertyChanged(nameof(SelectedPartNumber));
+                return;
+            }
             if (SetProperty(ref _selectedPartNumber, value))
             {
                 _settings.LastPartNumber = value ?? "";
@@ -126,12 +139,30 @@ public class MainViewModel : ViewModelBase
     private CancellationTokenSource? _partCountCts;
     private CancellationTokenSource? _lotCountCts;
 
+    // ── 下拉選單分頁載入 ────────────────────────────────────────────────
+    // PartNumbers / LotNumbers 是 UI 真正綁定的可見集合；資料量大時 ComboBox
+    // 首次展開會卡頓，因此採「先顯示 PageSize 筆 + 末尾哨兵『載入更多』」策略，
+    // 由使用者按需展開。_all* 為完整來源（背景計數任務、選擇查找等以這份為主）。
+    private const int PartPageSize = 128;
+    private const int LotPageSize = 128;
+    private List<PartListItem> _allPartNumbers = new();
+    private List<LotListItem> _allLotNumbers = new();
+    private bool _partsExpanded;
+    private bool _lotsExpanded;
+
     private string? _selectedLotNumber;
     public string? SelectedLotNumber
     {
         get => _selectedLotNumber;
         set
         {
+            // 「載入更多」哨兵被點擊：展開分頁、把目前選取值 push 回 ComboBox
+            if (value == LoadMoreSentinel.Id)
+            {
+                LoadMoreLotNumbers();
+                OnPropertyChanged(nameof(SelectedLotNumber));
+                return;
+            }
             if (SetProperty(ref _selectedLotNumber, value))
             {
                 _settings.LastLotNumber = value ?? "";
@@ -249,15 +280,20 @@ public class MainViewModel : ViewModelBase
             OnPathChanged();
 
             if (!string.IsNullOrEmpty(_settings.LastPartNumber) &&
-                PartNumbers.Any(p => p.Name == _settings.LastPartNumber))
+                _allPartNumbers.Any(p => p.Name == _settings.LastPartNumber))
             {
+                // 若上次的料號落在分頁外，自動展開讓 ComboBox 顯示之
+                if (!PartNumbers.Any(p => p.Name == _settings.LastPartNumber))
+                    LoadMorePartNumbers();
                 _selectedPartNumber = _settings.LastPartNumber;
                 OnPropertyChanged(nameof(SelectedPartNumber));
                 OnPartNumberChanged();
 
                 if (!string.IsNullOrEmpty(_settings.LastLotNumber) &&
-                    LotNumbers.Any(l => l.Id == _settings.LastLotNumber))
+                    _allLotNumbers.Any(l => l.Id == _settings.LastLotNumber))
                 {
+                    if (!LotNumbers.Any(l => l.Id == _settings.LastLotNumber))
+                        LoadMoreLotNumbers();
                     _selectedLotNumber = _settings.LastLotNumber;
                     OnPropertyChanged(nameof(SelectedLotNumber));
                     OnLotNumberChanged();
@@ -281,14 +317,18 @@ public class MainViewModel : ViewModelBase
 
         // Auto-select part number if detected
         if (!string.IsNullOrEmpty(analysis.PartNumber) &&
-            PartNumbers.Any(p => p.Name == analysis.PartNumber))
+            _allPartNumbers.Any(p => p.Name == analysis.PartNumber))
         {
+            if (!PartNumbers.Any(p => p.Name == analysis.PartNumber))
+                LoadMorePartNumbers();
             SelectedPartNumber = analysis.PartNumber;
 
             // Auto-select lot number if detected (OnPartNumberChanged already populated LotNumbers)
             if (!string.IsNullOrEmpty(analysis.LotNumber) &&
-                LotNumbers.Any(l => l.Id == analysis.LotNumber))
+                _allLotNumbers.Any(l => l.Id == analysis.LotNumber))
             {
+                if (!LotNumbers.Any(l => l.Id == analysis.LotNumber))
+                    LoadMoreLotNumbers();
                 SelectedLotNumber = analysis.LotNumber;
             }
         }
@@ -297,14 +337,14 @@ public class MainViewModel : ViewModelBase
     private void OnPathChanged()
     {
         var partNames = FileLocator.GetPartNumbers(AthleteSysPath, PartSortMode);
-        PartNumbers = new ObservableCollection<PartListItem>(
-            partNames.Select(n => new PartListItem { Name = n }));
+        SetAllPartNumbers(partNames.Select(n => new PartListItem { Name = n }));
         SelectedPartNumber = null;
-        LotNumbers.Clear();
+        SetAllLotNumbers(Enumerable.Empty<LotListItem>());
         SelectedLotNumber = null;
         Settings.Clear();
         _mergedSessions.Clear();   // path change invalidates all merged sessions
         _umkfMasterToChildren.Clear();
+        _lotDetailCache.Clear();
         _rawLotIdsForCurrentPart = null;
         _suppressUmkfRebuild = true;
         try { IsUmkfModeAvailable = false; IsUmkfMergeEnabled = false; UmkfStatusText = ""; }
@@ -325,7 +365,8 @@ public class MainViewModel : ViewModelBase
         // 此處將已知計數套用後再排序，可達到「目前可見計數的排序」效果。
         var items = partNames.Select(n => new PartListItem { Name = n }).ToList();
         items = ApplyPartCountSort(items, PartSortMode);
-        PartNumbers = new ObservableCollection<PartListItem>(items);
+        // 排序變化保留展開狀態：使用者若已按過「載入更多」，重新排序後仍應看到全部
+        SetAllPartNumbers(items, resetExpanded: false);
 
         // Preserve selection without re-firing OnPartNumberChanged (which would reload Master/Lot data)
         if (current != null && partNames.Contains(current))
@@ -402,18 +443,19 @@ public class MainViewModel : ViewModelBase
     /// <c>__umkf__</c> 母批；session-only 手動合併批 (<c>__merged__</c>) 一律保留。
     /// 由 <see cref="OnPartNumberChanged"/>、UMKF 屬性 setter、<see cref="RefreshLotNumbers"/> 共用。
     /// </summary>
-    private void RebuildLotsForUmkfMode()
+    private void RebuildLotsForUmkfMode(bool resetExpanded = true)
     {
         if (_rawLotIdsForCurrentPart == null || string.IsNullOrEmpty(SelectedPartNumber))
         {
-            LotNumbers.Clear();
+            SetAllLotNumbers(Enumerable.Empty<LotListItem>());
             UmkfStatusText = "";
             RefreshCanMergeLots();
             return;
         }
 
         var folderTimes = FileLocator.GetLotTimestamps(AthleteSysPath, SelectedPartNumber);
-        var existingCounts = LotNumbers.ToDictionary(
+        // 從完整來源保留計數，避免分頁可見視窗外的 item 因 rebuild 丟失已載入的 SubstrateCount
+        var existingCounts = _allLotNumbers.ToDictionary(
             li => li.Id, li => li.SubstrateCount, StringComparer.OrdinalIgnoreCase);
 
         // Invalidate any cached UMKF master sessions — toggling IncludeRBatches (or UMKF mode)
@@ -447,6 +489,9 @@ public class MainViewModel : ViewModelBase
                         Id = encoded,
                         UmkfChildCount = g.Value.Count,
                         CreatedAt = null,
+                        // 母批 IsSummaryOnly = 全部子批皆已快取且皆無 detail；任一未知或有 detail → 不標註
+                        IsSummaryOnly = g.Value.All(c =>
+                            _lotDetailCache.TryGetValue(c, out var d) && !d),
                     });
                 }
                 else
@@ -477,7 +522,8 @@ public class MainViewModel : ViewModelBase
         }
 
         items = SortLotItems(items, LotSortMode);
-        LotNumbers = new ObservableCollection<LotListItem>(items);
+        // 預設視為「新一批 lot」→ 重置展開；排序變化路徑 (RefreshLotNumbers) 會傳 false 保留
+        SetAllLotNumbers(items, resetExpanded);
 
         // If the previously-selected lot is no longer in the rebuilt list (e.g. its raw id got
         // absorbed into a UMKF master, or UMKF master disappeared after toggling off), clear it.
@@ -506,6 +552,9 @@ public class MainViewModel : ViewModelBase
             item.SubstrateCount = mg.Session.SubstrateCount;
         else if (existingCounts.TryGetValue(id, out var c) && c.HasValue)
             item.SubstrateCount = c;
+        // 從 detail cache 回填 IsSummaryOnly，rebuild 時不需等背景任務再跑一次
+        if (_lotDetailCache.TryGetValue(id, out var hasDetail))
+            item.IsSummaryOnly = !hasDetail;
         return item;
     }
 
@@ -521,7 +570,8 @@ public class MainViewModel : ViewModelBase
         _partCountCts = new CancellationTokenSource();
         var token = _partCountCts.Token;
         var path = AthleteSysPath;
-        var items = PartNumbers.ToList();
+        // 從完整來源 snapshot，避免哨兵被當成料號 + 確保未展開的項目也能拿到計數
+        var items = _allPartNumbers.ToList();
         var dispatcher = Application.Current.Dispatcher;
 
         if (string.IsNullOrEmpty(path) || items.Count == 0) return;
@@ -549,8 +599,8 @@ public class MainViewModel : ViewModelBase
                     if (token.IsCancellationRequested) return;
                     if (PartSortMode is FolderSortMode.CountDesc or FolderSortMode.CountAsc)
                     {
-                        var sorted = ApplyPartCountSort(PartNumbers.ToList(), PartSortMode);
-                        PartNumbers = new ObservableCollection<PartListItem>(sorted);
+                        var sorted = ApplyPartCountSort(_allPartNumbers, PartSortMode);
+                        SetAllPartNumbers(sorted, resetExpanded: false);
                     }
                 });
             }
@@ -586,6 +636,8 @@ public class MainViewModel : ViewModelBase
         // Running per-master tallies (accessed only on UI thread).
         var masterCount = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var masterMaxDate = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+        // 母批是否含 detail：任一子批有 detail 即 true；無紀錄等同 false（暫顯示「僅摘要」直到某子批回報有 detail）
+        var masterAnyDetail = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
 
         Task.Run(() =>
         {
@@ -593,14 +645,17 @@ public class MainViewModel : ViewModelBase
             {
                 if (token.IsCancellationRequested) return;
 
-                (int count, DateTime? date) info;
+                (int count, DateTime? date, bool hasDetail) info;
                 try { info = FileLocator.GetLotInfo(path, partNo, rawId); }
-                catch { info = (0, null); }
+                catch { info = (0, null, true); }  // 失敗時不顯示誤導性註記
 
                 if (token.IsCancellationRequested) return;
                 dispatcher.BeginInvoke(() =>
                 {
                     if (token.IsCancellationRequested) return;
+
+                    // 寫入 detail cache：供 UMKF 切換 / 排序變化時 RebuildLotsForUmkfMode 重算註記
+                    _lotDetailCache[rawId] = info.hasDetail;
 
                     if (childToMaster.TryGetValue(rawId, out var masterId))
                     {
@@ -609,22 +664,27 @@ public class MainViewModel : ViewModelBase
                         if (info.date.HasValue &&
                             (!masterMaxDate.TryGetValue(masterId, out var prevDate) || info.date.Value > prevDate))
                             masterMaxDate[masterId] = info.date.Value;
+                        // 任一子批有 detail → 母批整體視為有 detail
+                        if (info.hasDetail) masterAnyDetail[masterId] = true;
 
-                        var item = LotNumbers.FirstOrDefault(li => string.Equals(li.Id, masterId, StringComparison.OrdinalIgnoreCase));
+                        // 查找完整來源，讓分頁外的項目也能收到更新；可見視窗內的 item 同實例會自動 PropertyChanged。
+                        var item = _allLotNumbers.FirstOrDefault(li => string.Equals(li.Id, masterId, StringComparison.OrdinalIgnoreCase));
                         if (item != null)
                         {
                             item.SubstrateCount = masterCount[masterId];
                             if (masterMaxDate.TryGetValue(masterId, out var d)) item.CreatedAt = d;
+                            item.IsSummaryOnly = !(masterAnyDetail.TryGetValue(masterId, out var anyDetail) && anyDetail);
                         }
                     }
                     else
                     {
                         // Singleton (UMKF-disabled or solo group): update the lot item directly.
-                        var item = LotNumbers.FirstOrDefault(li => string.Equals(li.Id, rawId, StringComparison.OrdinalIgnoreCase));
+                        var item = _allLotNumbers.FirstOrDefault(li => string.Equals(li.Id, rawId, StringComparison.OrdinalIgnoreCase));
                         if (item != null)
                         {
                             item.SubstrateCount = info.count;
                             if (info.date.HasValue) item.CreatedAt = info.date;
+                            item.IsSummaryOnly = !info.hasDetail;
                         }
                     }
                 });
@@ -636,9 +696,9 @@ public class MainViewModel : ViewModelBase
                     if (token.IsCancellationRequested) return;
                     // 背景全部讀完後重新排序一次（主鍵：CreatedAt 日期降序；次鍵：使用者選的 SortMode）
                     var current = SelectedLotNumber;
-                    var sorted = SortLotItems(LotNumbers.ToList(), LotSortMode);
-                    LotNumbers = new ObservableCollection<LotListItem>(sorted);
-                    if (current != null && LotNumbers.Any(l => l.Id == current))
+                    var sorted = SortLotItems(_allLotNumbers, LotSortMode);
+                    SetAllLotNumbers(sorted, resetExpanded: false);
+                    if (current != null && _allLotNumbers.Any(l => l.Id == current))
                     {
                         _selectedLotNumber = current;
                         OnPropertyChanged(nameof(SelectedLotNumber));
@@ -656,7 +716,7 @@ public class MainViewModel : ViewModelBase
     {
         if (string.IsNullOrEmpty(SelectedPartNumber))
         {
-            LotNumbers.Clear();
+            SetAllLotNumbers(Enumerable.Empty<LotListItem>());
             RefreshCanMergeLots();
             return;
         }
@@ -664,9 +724,10 @@ public class MainViewModel : ViewModelBase
         var current = SelectedLotNumber;
         // Refresh raw lot ids from disk so any new/removed folders are picked up.
         _rawLotIdsForCurrentPart = FileLocator.GetLotNumbers(AthleteSysPath, SelectedPartNumber, LotSortMode).ToList();
-        RebuildLotsForUmkfMode();
+        // 排序變化視為「同一批 lot」→ 保留使用者已展開狀態，不重置回分頁
+        RebuildLotsForUmkfMode(resetExpanded: false);
 
-        if (current != null && LotNumbers.Any(li => string.Equals(li.Id, current, StringComparison.OrdinalIgnoreCase)))
+        if (current != null && _allLotNumbers.Any(li => string.Equals(li.Id, current, StringComparison.OrdinalIgnoreCase)))
         {
             _selectedLotNumber = current;
             OnPropertyChanged(nameof(SelectedLotNumber));
@@ -686,6 +747,7 @@ public class MainViewModel : ViewModelBase
         // Part# change invalidates session-only merged lots + UMKF state from the previous Part#.
         _mergedSessions.Clear();
         _umkfMasterToChildren.Clear();
+        _lotDetailCache.Clear();
 
         var lotIds = FileLocator.GetLotNumbers(AthleteSysPath, SelectedPartNumber, LotSortMode);
         _rawLotIdsForCurrentPart = lotIds.ToList();
@@ -1255,7 +1317,8 @@ public class MainViewModel : ViewModelBase
             return;
         }
 
-        var dialog = new Views.LotMergeDialog(LotNumbers)
+        // 傳完整來源（_allLotNumbers），而非分頁過的 LotNumbers，讓使用者在對話框內也能看到全部批號
+        var dialog = new Views.LotMergeDialog(_allLotNumbers)
             { Owner = Application.Current.MainWindow };
         if (dialog.ShowDialog() != true) return;
         var picks = dialog.SelectedLotIds;
@@ -1275,12 +1338,13 @@ public class MainViewModel : ViewModelBase
             _mergedSessions[mergedId] = merged;
             // Append directly (without re-sorting the whole list — preserve current order;
             // user can re-sort to bring the merged lot into its date group if desired).
-            LotNumbers.Add(new LotListItem
+            _allLotNumbers.Add(new LotListItem
             {
                 Id = mergedId,
                 SubstrateCount = merged.Session.SubstrateCount,
                 CreatedAt = FileLocator.TryDecodeMergedLot(mergedId, out var mergeTs) ? mergeTs : DateTime.Now,
             });
+            RefreshLotNumbersView();
             RefreshCanMergeLots();
             SelectedLotNumber = mergedId;     // triggers OnLotNumberChanged → merged branch
         }
@@ -1383,5 +1447,76 @@ public class MainViewModel : ViewModelBase
             Summary = LotSummaryCalculator.Calculate(mergedRows)
         };
         return new MergedLotData { Session = session, SubstrateMaps = mergedMaps };
+    }
+
+    // ── 分頁載入 helpers ────────────────────────────────────────────────
+
+    /// <summary>
+    /// 設定 Part# 完整來源並重建可見視圖。<paramref name="resetExpanded"/>=true 表示是「新一批
+    /// 資料」（換 source 路徑），需要從頭分頁；排序變化等情況傳 false 保留使用者已展開狀態。
+    /// </summary>
+    private void SetAllPartNumbers(IEnumerable<PartListItem> items, bool resetExpanded = true)
+    {
+        _allPartNumbers = items.ToList();
+        if (resetExpanded) _partsExpanded = false;
+        RefreshPartNumbersView();
+    }
+
+    private void RefreshPartNumbersView()
+    {
+        var capped = _partsExpanded || _allPartNumbers.Count <= PartPageSize
+            ? new List<PartListItem>(_allPartNumbers)
+            : _allPartNumbers.Take(PartPageSize).ToList();
+        if (!_partsExpanded && _allPartNumbers.Count > PartPageSize)
+        {
+            capped.Add(new PartListItem
+            {
+                Name = LoadMoreSentinel.Id,
+                IsLoadMore = true,
+                RemainingCount = _allPartNumbers.Count - PartPageSize,
+            });
+        }
+        PartNumbers = new ObservableCollection<PartListItem>(capped);
+    }
+
+    /// <summary>使用者點擊 Part# 的「載入更多」哨兵；展開後不再顯示哨兵。</summary>
+    public void LoadMorePartNumbers()
+    {
+        if (_partsExpanded) return;
+        _partsExpanded = true;
+        RefreshPartNumbersView();
+    }
+
+    /// <summary>同 <see cref="SetAllPartNumbers"/>，作用於 Lot# 列表。</summary>
+    private void SetAllLotNumbers(IEnumerable<LotListItem> items, bool resetExpanded = true)
+    {
+        _allLotNumbers = items.ToList();
+        if (resetExpanded) _lotsExpanded = false;
+        RefreshLotNumbersView();
+    }
+
+    private void RefreshLotNumbersView()
+    {
+        var capped = _lotsExpanded || _allLotNumbers.Count <= LotPageSize
+            ? new List<LotListItem>(_allLotNumbers)
+            : _allLotNumbers.Take(LotPageSize).ToList();
+        if (!_lotsExpanded && _allLotNumbers.Count > LotPageSize)
+        {
+            capped.Add(new LotListItem
+            {
+                Id = LoadMoreSentinel.Id,
+                IsLoadMore = true,
+                RemainingCount = _allLotNumbers.Count - LotPageSize,
+            });
+        }
+        LotNumbers = new ObservableCollection<LotListItem>(capped);
+    }
+
+    /// <summary>使用者點擊 Lot# 的「載入更多」哨兵。</summary>
+    public void LoadMoreLotNumbers()
+    {
+        if (_lotsExpanded) return;
+        _lotsExpanded = true;
+        RefreshLotNumbersView();
     }
 }
