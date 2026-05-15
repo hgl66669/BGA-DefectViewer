@@ -353,12 +353,15 @@ public class LotMonitorViewModel : ViewModelBase
     public void OnRowSingleClick(SummaryRow row) => RowSingleClicked?.Invoke(row);
 
     /// <summary>由 SubstrateMap 單擊觸發，同步選中 Lot Monitor 對應行</summary>
-    public void SelectBySubstrateId(string substrateId)
+    public void SelectByMap(SubstrateMap map)
     {
+        // SourceLotId disambiguates merged-lot substrates that share a SubstrateId
+        // (e.g., Leg1-10 and Leg2-10 both extract to "10"). Null on both sides for regular lots.
         var target = Rows.FirstOrDefault(r =>
-            r.SubstrateId.Equals(substrateId, StringComparison.OrdinalIgnoreCase)
-            || substrateId.EndsWith(r.SubstrateId, StringComparison.OrdinalIgnoreCase)
-            || r.SubstrateId.EndsWith(substrateId, StringComparison.OrdinalIgnoreCase));
+            r.SourceLotId == map.SourceLotId
+            && (r.SubstrateId.Equals(map.SubstrateId, StringComparison.OrdinalIgnoreCase)
+                || map.SubstrateId.EndsWith(r.SubstrateId, StringComparison.OrdinalIgnoreCase)
+                || r.SubstrateId.EndsWith(map.SubstrateId, StringComparison.OrdinalIgnoreCase)));
 
         if (target != null)
             SelectedRow = target;

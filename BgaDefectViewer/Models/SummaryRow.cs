@@ -24,4 +24,11 @@ public class SummaryRow
 
     public string SubstrateId => FileLocator.ExtractSubstrateId(Name);
     public int RowIndex { get; set; }
+
+    /// <summary>
+    /// 合併批 session 中，此 row 來源的 Lot#。一般批為 null（與
+    /// <c>MainViewModel.SelectedLotNumber</c> 一致）。鏡像 <see cref="SubstrateMap.SourceLotId"/>，
+    /// 用來消除合併批中相同 SubstrateId（如 Leg1-10 vs Leg2-10）的歧義。
+    /// </summary>
+    public string? SourceLotId { get; set; }
 }
