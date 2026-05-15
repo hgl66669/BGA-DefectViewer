@@ -12,6 +12,11 @@ public partial class LotMergeDialog : Window
     {
         public string LotId { get; init; } = "";
         public string DisplayName { get; init; } = "";
+        public DateTime? CreatedAt { get; init; }
+
+        /// <summary>分組鍵，與 <see cref="LotListItem.DateGroupKey"/> 同規則。</summary>
+        public string DateGroupKey =>
+            CreatedAt.HasValue ? CreatedAt.Value.ToString("yyyy/MM/dd") : "(未知日期)";
 
         private bool _isSelected;
         public bool IsSelected
@@ -41,7 +46,12 @@ public partial class LotMergeDialog : Window
         foreach (var lot in availableLots)
         {
             if (lot.Id.StartsWith(FileLocator.MergedLotPrefix, StringComparison.Ordinal)) continue;
-            var pick = new LotPick { LotId = lot.Id, DisplayName = lot.DisplayName };
+            var pick = new LotPick
+            {
+                LotId = lot.Id,
+                DisplayName = lot.DisplayName,
+                CreatedAt = lot.CreatedAt,
+            };
             pick.PropertyChanged += OnPickChanged;
             Items.Add(pick);
         }
