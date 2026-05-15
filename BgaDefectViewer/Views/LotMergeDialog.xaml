@@ -4,6 +4,16 @@
         Title="選擇要合併的 Lot#" Width="400" Height="520"
         WindowStartupLocation="CenterOwner"
         ShowInTaskbar="False">
+    <Window.Resources>
+        <!-- 依日期分組視圖：Items 已由 LotMonitorViewModel.LotNumbers 預排（CreatedAt.Date desc
+             + 次排序），PropertyGroupDescription 直接把相鄰同日項目聚成一組。GroupStyle 用灰字
+             日期作為小標題，與 MainWindow Lot# 下拉視覺一致。 -->
+        <CollectionViewSource x:Key="ItemsGroupedView" Source="{Binding Items}">
+            <CollectionViewSource.GroupDescriptions>
+                <PropertyGroupDescription PropertyName="DateGroupKey"/>
+            </CollectionViewSource.GroupDescriptions>
+        </CollectionViewSource>
+    </Window.Resources>
     <DockPanel Margin="10">
         <TextBlock DockPanel.Dock="Top" TextWrapping="Wrap" Margin="0,0,0,8"
                    Text="勾選 2 個以上 Lot 進行合併（僅本次 session 有效，不修改原始檔）。"/>
@@ -15,8 +25,20 @@
             <Button Content="取消" Width="80" Margin="4,0" IsCancel="True"/>
         </StackPanel>
 
-        <ListBox ItemsSource="{Binding Items}" HorizontalContentAlignment="Stretch"
+        <ListBox ItemsSource="{Binding Source={StaticResource ItemsGroupedView}}"
+                 HorizontalContentAlignment="Stretch"
                  ScrollViewer.VerticalScrollBarVisibility="Auto">
+            <ListBox.GroupStyle>
+                <GroupStyle>
+                    <GroupStyle.HeaderTemplate>
+                        <DataTemplate>
+                            <TextBlock Text="{Binding Name}"
+                                       Foreground="#999" FontSize="11"
+                                       Padding="6,4,6,2"/>
+                        </DataTemplate>
+                    </GroupStyle.HeaderTemplate>
+                </GroupStyle>
+            </ListBox.GroupStyle>
             <ListBox.ItemTemplate>
                 <DataTemplate>
                     <CheckBox IsChecked="{Binding IsSelected, UpdateSourceTrigger=PropertyChanged}"
