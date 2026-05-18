@@ -118,7 +118,14 @@ public class LotMonitorViewModel : ViewModelBase
     public YieldMode YieldMode
     {
         get => _yieldMode;
-        set { if (SetProperty(ref _yieldMode, value)) RecalculateSummaries(); }
+        set
+        {
+            if (SetProperty(ref _yieldMode, value))
+            {
+                OnPropertyChanged(nameof(YieldModeAnnotation));
+                RecalculateSummaries();
+            }
+        }
     }
 
     private bool _countETC = true;
@@ -176,6 +183,34 @@ public class LotMonitorViewModel : ViewModelBase
     }
 
     public bool DieBaseHasAutoValue => DieBaseDieCountAuto > 0;
+
+    private bool _isDieBaseSameAsDefault;
+    /// <summary>
+    /// True 表示目前資料下 DieBase 與 Default 模式算出的「1st Insp.」良率字串相同
+    /// (因為 <c>Σ(GDie+NGDie) == n × D</c>，這是 KBGA 完整資料下常見情況)。
+    /// 用來在 UI 上提示使用者「沒切換的必要」。
+    /// </summary>
+    public bool IsDieBaseSameAsDefault
+    {
+        get => _isDieBaseSameAsDefault;
+        private set
+        {
+            if (SetProperty(ref _isDieBaseSameAsDefault, value))
+                OnPropertyChanged(nameof(YieldModeAnnotation));
+        }
+    }
+
+    /// <summary>
+    /// 進階面板上 Yield mode combo 旁的灰字註解：
+    /// <list type="bullet">
+    /// <item>DieBase + 與 Default 結果相同 → <c>"(同 Default — 資料完整時的正常情況)"</c></item>
+    /// <item>其他 → 空字串</item>
+    /// </list>
+    /// </summary>
+    public string YieldModeAnnotation =>
+        YieldMode == YieldMode.DieBase && IsDieBaseSameAsDefault
+            ? "(同 Default — 資料完整時的正常情況)"
+            : "";
 
     private string _topNWarning = "";
     /// <summary>當 Top-N 超過實際基板數時，此屬性帶有提示文字；否則為空字串。</summary>
@@ -463,6 +498,27 @@ public class LotMonitorViewModel : ViewModelBase
             LotSummaryRows = new ObservableCollection<LotSummaryLine>(
                 LotSummaryCalculator.Calculate(_filteredRows, opts).Lines);
             IsSummaryCalculated = true;
+        }
+
+        // 判斷 DieBase 是否與 Default 結果相同（用以在進階面板顯示「(同 Default)」灰字）。
+        // 比較第一行 "1st Insp." 與第二行 "Repaired" 的 YieldPercent 字串。
+        // 兩值等價的條件：Σ(GDie+NGDie) == n × D（KBGA 完整資料 + 自動 DIE/Sub 時通常成立）。
+        if (YieldMode == YieldMode.DieBase && LotSummaryRows.Count >= 2)
+        {
+            var defaultOpts = new LotSummaryOptions
+            {
+                Mode = YieldMode.Default,
+                CountETC = CountETC,
+                DieBaseDieCount = DieBaseDieCountEffective,
+            };
+            var defaultLines = LotSummaryCalculator.Calculate(_filteredRows, defaultOpts).Lines;
+            IsDieBaseSameAsDefault = defaultLines.Count >= 2
+                && defaultLines[0].YieldPercent == LotSummaryRows[0].YieldPercent
+                && defaultLines[1].YieldPercent == LotSummaryRows[1].YieldPercent;
+        }
+        else
+        {
+            IsDieBaseSameAsDefault = false;
         }
 
         // 整批 Cycle Time（永遠重算）— 使用使用者選擇的 Stage1Only 與 MaxGap 選項

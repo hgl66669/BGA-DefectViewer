@@ -93,34 +93,10 @@
                                Foreground="#E67E22" FontStyle="Italic"
                                VerticalAlignment="Center" Margin="2,0,12,0"/>
 
-                    <TextBlock Text="Yield 模式:" VerticalAlignment="Center" Margin="0,0,4,0"/>
-                    <ComboBox Width="100"
-                              ItemsSource="{Binding YieldModes}"
-                              SelectedItem="{Binding YieldMode}"
-                              VerticalAlignment="Center"/>
-
                     <CheckBox Content="CountETC?"
                               IsChecked="{Binding CountETC}"
-                              Margin="14,0,0,0" VerticalAlignment="Center"
+                              Margin="0,0,0,0" VerticalAlignment="Center"
                               ToolTip="勾選 = 把 ETC 類視為缺陷計入良率分母；&#x0a;取消 = 將「只有 ETC 類缺陷」的基板視為良品（NGDie 計入 GDie）。&#x0a;ETC 類 = ETC / E.O. / LD / SD / Bridge。&#x0a;若批次內無 ETC 類缺陷造成 NG die，勾選與否結果相同。"/>
-
-                    <TextBlock Text="DIE/Sub:" Margin="16,0,4,0" VerticalAlignment="Center"/>
-                    <TextBox Width="60" VerticalAlignment="Center"
-                             Text="{Binding DieBaseDieCount, UpdateSourceTrigger=PropertyChanged}"
-                             ToolTip="預設自動偵測；手動輸入後覆寫"/>
-                    <TextBlock Margin="6,0,0,0" VerticalAlignment="Center" Foreground="Gray">
-                        <TextBlock.Style>
-                            <Style TargetType="TextBlock">
-                                <Setter Property="Text" Value="{Binding DieBaseDieCountAuto, StringFormat=(auto: {0})}"/>
-                                <Style.Triggers>
-                                    <DataTrigger Binding="{Binding DieBaseHasAutoValue}" Value="False">
-                                        <Setter Property="Text" Value="(請手動輸入)"/>
-                                        <Setter Property="Foreground" Value="#C62828"/>
-                                    </DataTrigger>
-                                </Style.Triggers>
-                            </Style>
-                        </TextBlock.Style>
-                    </TextBlock>
 
                     <!-- Cycle Time 選項 -->
                     <Border BorderBrush="#CFCFCF" BorderThickness="1,0,0,0" Margin="16,2,0,2"/>
@@ -132,8 +108,68 @@
                                ToolTip="超過此秒數的間隔視為休息/換批，不計入平均"/>
                     <TextBox Width="50" VerticalAlignment="Center"
                              Text="{Binding CycleTimeMaxGapSeconds, UpdateSourceTrigger=PropertyChanged}"
-                             ToolTip="預設 300 秒；可自訂"/>
+                             ToolTip="預設 120 秒；可自訂"/>
                     <TextBlock Text="s" Margin="2,0,0,0" VerticalAlignment="Center"/>
+
+                    <!-- Yield 進階：Yield 模式 + DIE/Sub 收進可展開 Popup。
+                         一般使用者用 Default + 自動 DIE/Sub 即可，不需要看到這兩個控制項。
+                         切到 DieBase 時若結果與 Default 一致，Popup 內顯示「同 Default」灰字提示。 -->
+                    <Border BorderBrush="#CFCFCF" BorderThickness="1,0,0,0" Margin="16,2,0,2"/>
+                    <ToggleButton x:Name="YieldAdvancedToggle"
+                                  Content="Yield 進階 ▼"
+                                  Padding="8,2" Margin="14,0,0,0"
+                                  VerticalAlignment="Center"
+                                  ToolTip="切換 Yield 計算模式 (Default / DieBase) 與 DIE/Sub 覆寫"/>
+                    <Popup PlacementTarget="{Binding ElementName=YieldAdvancedToggle}"
+                           Placement="Bottom"
+                           IsOpen="{Binding IsChecked, ElementName=YieldAdvancedToggle, Mode=TwoWay}"
+                           StaysOpen="False" AllowsTransparency="True"
+                           PopupAnimation="Fade">
+                        <Border Background="White" BorderBrush="#BBB" BorderThickness="1" Padding="12,10"
+                                SnapsToDevicePixels="True">
+                            <Border.Effect>
+                                <DropShadowEffect Color="Black" Opacity="0.18" BlurRadius="8" ShadowDepth="2"/>
+                            </Border.Effect>
+                            <StackPanel Orientation="Vertical">
+                                <!-- Yield 模式 -->
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                    <TextBlock Text="Yield 模式:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                    <ComboBox Width="110"
+                                              ItemsSource="{Binding YieldModes}"
+                                              SelectedItem="{Binding YieldMode}"
+                                              VerticalAlignment="Center"/>
+                                    <TextBlock Text="{Binding YieldModeAnnotation}"
+                                               Foreground="#888" FontStyle="Italic" FontSize="11"
+                                               VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                </StackPanel>
+
+                                <!-- DIE/Sub -->
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                    <TextBlock Text="DIE/Sub:" VerticalAlignment="Center" Margin="0,0,4,0"/>
+                                    <TextBox Width="60" VerticalAlignment="Center"
+                                             Text="{Binding DieBaseDieCount, UpdateSourceTrigger=PropertyChanged}"
+                                             ToolTip="預設自動偵測；手動輸入後覆寫"/>
+                                    <TextBlock Margin="6,0,0,0" VerticalAlignment="Center" Foreground="Gray">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Text" Value="{Binding DieBaseDieCountAuto, StringFormat=(auto: {0})}"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding DieBaseHasAutoValue}" Value="False">
+                                                        <Setter Property="Text" Value="(請手動輸入)"/>
+                                                        <Setter Property="Foreground" Value="#C62828"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </StackPanel>
+
+                                <TextBlock TextWrapping="Wrap" MaxWidth="320"
+                                           Foreground="#666" FontSize="11"
+                                           Text="說明：Default = 沿用 KBGA 報告的 NGDie/GDie；DieBase = 改用 (1 − ΣNGDie / (n × DIE/Sub))，可手動覆寫 DIE/Sub 做 what-if 分析。一般 KBGA 完整資料下兩者結果相同。"/>
+                            </StackPanel>
+                        </Border>
+                    </Popup>
                 </StackPanel>
 
                 <!-- Row 1: Top-N summary (visible only when TopNEnabled) -->
