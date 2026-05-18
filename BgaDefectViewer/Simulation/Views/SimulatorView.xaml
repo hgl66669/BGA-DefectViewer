@@ -269,6 +269,48 @@
                     </StackPanel>
                 </GroupBox>
 
+                <GroupBox Header="Binarization &amp; Inspection (Stage 2)">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="Auto"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition/><RowDefinition/>
+                            </Grid.RowDefinitions>
+
+                            <TextBlock Grid.Row="0" Grid.Column="0" Style="{StaticResource LabelStyle}" Text="Bin level (0-255):"
+                                       ToolTip="Simple threshold (KBGA BINLEVEL[0]). Pixels ≥ this value become white in the binary view."/>
+                            <TextBox   Grid.Row="0" Grid.Column="1" Text="{Binding BinLevel, UpdateSourceTrigger=LostFocus}"/>
+                            <TextBlock Grid.Row="0" Grid.Column="2" Style="{StaticResource LabelStyle}" Text="Missing ratio:"
+                                       ToolTip="A pad with white-pixel fraction below this is judged Miss. 0.10 = at least 10% of the pad disk must light up."/>
+                            <TextBox   Grid.Row="0" Grid.Column="3" Text="{Binding MissingFillRatio, StringFormat=F2, UpdateSourceTrigger=LostFocus}"/>
+                        </Grid>
+
+                        <StackPanel Orientation="Horizontal" Margin="2,4,2,2">
+                            <RadioButton Content="Grayscale view" GroupName="ViewMode"
+                                         IsChecked="{Binding IsGrayscaleView}" Margin="2,2,8,2"/>
+                            <RadioButton Content="Binary view"    GroupName="ViewMode"
+                                         IsChecked="{Binding IsBinaryView}"    Margin="2"/>
+                        </StackPanel>
+
+                        <UniformGrid Columns="2" Margin="0,4,0,0">
+                            <Button Content="Binarize"       Command="{Binding BinarizeCommand}"      Margin="2" Padding="4"/>
+                            <Button Content="Run Inspection" Command="{Binding RunInspectionCommand}" Margin="2" Padding="4"/>
+                        </UniformGrid>
+
+                        <StackPanel Margin="0,4,0,0">
+                            <CheckBox Content="Show defect markers (×)" IsChecked="{Binding ShowDefectMarkers}" Margin="2"
+                                      ToolTip="KBGA「結果表示」 — colour-coded × on faulty pads (per KBGA-O1 §2.4.1.3 / §3.6.3)."/>
+                            <CheckBox Content="Show master balls (○)"  IsChecked="{Binding ShowMasterBalls}"  Margin="2"
+                                      ToolTip="KBGA「マスターボール表示」 — dashed ○ at every master position."/>
+                        </StackPanel>
+                    </StackPanel>
+                </GroupBox>
+
                 <GroupBox Header="Reproducibility &amp; Actions">
                     <StackPanel>
                         <Grid>
@@ -318,6 +360,11 @@
             <StatusBar Grid.Row="1">
                 <StatusBarItem>
                     <TextBlock Text="{Binding StatusText}"/>
+                </StatusBarItem>
+                <Separator/>
+                <StatusBarItem>
+                    <TextBlock FontFamily="Consolas"
+                               Text="{Binding InspectionText, StringFormat='Inspect: {0}'}"/>
                 </StatusBarItem>
                 <Separator/>
                 <StatusBarItem>
