@@ -39,12 +39,23 @@ public class SimulatorViewModel : ViewModelBase
         FollowBlobDiameterCommand = new RelayCommand(
             _ => PadDiameter = Math.Round(_blobDiameterMean + 0.010, 4));
 
+        // Stage 2 commands — the View glue wires these to the Canvas (it owns
+        // the bitmaps); we just raise an event so the VM stays free of WPF
+        // bitmap types.
+        BinarizeCommand = new RelayCommand(_ => BinarizeRequested?.Invoke(_binLevel));
+        RunInspectionCommand = new RelayCommand(_ => InspectionRequested?.Invoke());
+
         // Kick off initial generation so canvas isn't empty
         ScheduleRegenerate();
     }
 
     public event Action<SimulationFrame>? FrameUpdated;
     public event Action? ResetViewRequested;
+    // Stage 2 events — view-layer transforms these into canvas calls.
+    public event Action<byte>? BinarizeRequested;            // payload: BinLevel
+    public event Action? InspectionRequested;
+    public event Action<ViewMode>? ViewModeChanged;
+    public event Action<bool, bool>? MarkerVisibilityChanged; // (showDefect, showMaster)
 
     public ObservableCollection<IPadLayout> Layouts { get; }
 
@@ -263,6 +274,54 @@ public class SimulatorViewModel : ViewModelBase
     private string _statusText = "Ready";
     public string StatusText { get => _statusText; private set => SetProperty(ref _statusText, value); }
 
+    // ── Stage 2: Binarization & Inspection ────────────────────────────────
+    private byte _binLevel = 38;
+    public byte BinLevel { get => _binLevel; set => SetProperty(ref _binLevel, value); }
+
+    private double _missingFillRatio = 0.10;
+    public double MissingFillRatio { get => _missingFillRatio; set => SetProperty(ref _missingFillRatio, value); }
+
+    private ViewMode _viewMode = ViewMode.Grayscale;
+    public ViewMode ViewMode
+    {
+        get => _viewMode;
+        set
+        {
+            if (!SetProperty(ref _viewMode, value)) return;
+            OnPropertyChanged(nameof(IsGrayscaleView));
+            OnPropertyChanged(nameof(IsBinaryView));
+            ViewModeChanged?.Invoke(value);
+        }
+    }
+    public bool IsGrayscaleView { get => _viewMode == ViewMode.Grayscale; set { if (value) ViewMode = ViewMode.Grayscale; } }
+    public bool IsBinaryView    { get => _viewMode == ViewMode.Binary;    set { if (value) ViewMode = ViewMode.Binary; } }
+
+    private bool _showDefectMarkers = true;
+    public bool ShowDefectMarkers
+    {
+        get => _showDefectMarkers;
+        set { if (SetProperty(ref _showDefectMarkers, value)) MarkerVisibilityChanged?.Invoke(_showDefectMarkers, _showMasterBalls); }
+    }
+
+    private bool _showMasterBalls;
+    public bool ShowMasterBalls
+    {
+        get => _showMasterBalls;
+        set { if (SetProperty(ref _showMasterBalls, value)) MarkerVisibilityChanged?.Invoke(_showDefectMarkers, _showMasterBalls); }
+    }
+
+    private string _inspectionText = "(not run)";
+    public string InspectionText { get => _inspectionText; set => SetProperty(ref _inspectionText, value); }
+
+    public BinarizationParams BuildBinarizationParams() => new()
+    {
+        BinLevel = _binLevel,
+        MissingFillRatio = _missingFillRatio,
+        ViewMode = _viewMode,
+        ShowDefectMarkers = _showDefectMarkers,
+        ShowMasterBalls = _showMasterBalls,
+    };
+
     public string TotalPadsText => $"{(_rows * _cols):N0} pads";
 
     public bool AutoRegenerateAllowed => _rows * _cols <= AutoRegenPadThreshold;
@@ -273,6 +332,8 @@ public class SimulatorViewModel : ViewModelBase
     public ICommand GenerateCommand { get; }
     public ICommand ResetViewCommand { get; }
     public ICommand FollowBlobDiameterCommand { get; }
+    public ICommand BinarizeCommand { get; }
+    public ICommand RunInspectionCommand { get; }
 
     public SimulationParams BuildParams() => new()
     {
@@ -362,6 +423,10 @@ public class SimulatorViewModel : ViewModelBase
                 };
                 StatusText = $"{stats.TotalPads:N0} pads | present {stats.PresentCount:N0} | missing {stats.MissingCount:N0} | shifted {stats.ShiftedCount:N0} | gen {stats.GenMs} ms";
                 FrameUpdated?.Invoke(simFrame);
+                // New frame ⇒ canvas already cleared inspection / view mode. Sync the VM
+                // so the UI radio buttons and status reflect that.
+                InspectionText = "(not run)";
+                if (_viewMode != ViewMode.Grayscale) ViewMode = ViewMode.Grayscale;
             } while (_pendingRegen);
         }
         catch (Exception ex)

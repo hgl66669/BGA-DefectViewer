@@ -5,6 +5,7 @@ using System.Windows.Media.Imaging;
 using BgaDefectViewer.Helpers;
 using BgaDefectViewer.Simulation.Layouts;
 using BgaDefectViewer.Simulation.Models;
+using BgaDefectViewer.Simulation.Processing;
 
 namespace BgaDefectViewer.Simulation.Controls;
 
@@ -13,14 +14,23 @@ public class SimulationCanvas : FrameworkElement
     private readonly VisualCollection _visuals;
     private readonly DrawingVisual _backgroundVisual = new();
     private readonly DrawingVisual _ballVisual = new();
+    private readonly DrawingVisual _resultVisual = new();   // Stage 2: ○ master / × defect overlay
     private readonly DrawingVisual _hoverVisual = new();
 
     private WriteableBitmap? _pixelBitmap;
+    private WriteableBitmap? _binaryBitmap;                 // Stage 2: thresholded copy of _pixelBitmap
     private Size _lastBackgroundSize = Size.Empty;
 
     private SimulationFrame? _frame;
     private CoordinateTransform? _transform;
     private IPadLayout? _layout;
+
+    // Stage 2 view + inspection state.
+    private ViewMode _viewMode = ViewMode.Grayscale;
+    private InspectionFrame? _inspection;
+    private bool _showDefectMarkers = true;
+    private bool _showMasterBalls;
+    private byte _lastBinThreshold = 38;     // remembered so pan/zoom can re-derive binary view
 
     private bool _isPanning;
     private Point _lastMousePos;
@@ -44,6 +54,7 @@ public class SimulationCanvas : FrameworkElement
         {
             _backgroundVisual,
             _ballVisual,
+            _resultVisual,   // Stage 2 markers — above ball image, below hover.
             _hoverVisual,
         };
         ClipToBounds = true;
@@ -73,6 +84,62 @@ public class SimulationCanvas : FrameworkElement
     protected override int VisualChildrenCount => _visuals.Count;
     protected override Visual GetVisualChild(int index) => _visuals[index];
 
+    // ── Stage 2 surface ── exposed so the host can drive Binarizer / Inspector
+    // without the canvas itself depending on the Processing namespace at the
+    // call site. The View glue (SimulatorView.xaml.cs) reads these.
+
+    /// <summary>Coordinate transform used by the current frame; null until the
+    /// first frame is loaded. Required by Inspector to map pad mm → screen px.</summary>
+    public CoordinateTransform? Transform => _transform;
+
+    /// <summary>Grayscale-rendered bitmap (the camera frame). Use as Binarizer input.</summary>
+    public WriteableBitmap? PixelBitmap => _pixelBitmap;
+
+    /// <summary>Thresholded view of <see cref="PixelBitmap"/>. Populated by
+    /// <see cref="Binarize"/>. Use as Inspector input.</summary>
+    public WriteableBitmap? BinaryBitmap => _binaryBitmap;
+
+    /// <summary>Switch which bitmap <c>_ballVisual</c> displays.</summary>
+    public void SetViewMode(ViewMode mode)
+    {
+        if (_viewMode == mode) return;
+        _viewMode = mode;
+        if (_frame != null) UpdateBallVisualImage((int)ActualWidth, (int)ActualHeight);
+    }
+
+    /// <summary>Apply KBGA-style simple threshold (≥ <paramref name="threshold"/> → white)
+    /// from <see cref="PixelBitmap"/> into <see cref="BinaryBitmap"/>, allocating
+    /// the binary bitmap on first call / size change.</summary>
+    public void Binarize(byte threshold)
+    {
+        if (_pixelBitmap == null) return;
+        _lastBinThreshold = threshold;
+        int w = _pixelBitmap.PixelWidth;
+        int h = _pixelBitmap.PixelHeight;
+        if (_binaryBitmap == null || _binaryBitmap.PixelWidth != w || _binaryBitmap.PixelHeight != h)
+            _binaryBitmap = new WriteableBitmap(w, h, 96, 96, PixelFormats.Bgra32, null);
+        Binarizer.ApplyThreshold(_pixelBitmap, _binaryBitmap, threshold);
+        if (_viewMode == ViewMode.Binary) UpdateBallVisualImage(w, h);
+    }
+
+    /// <summary>Attach an inspection result so the result-marker overlay can
+    /// draw ○ / × at master positions. Pass null to clear.</summary>
+    public void SetInspection(InspectionFrame? frame)
+    {
+        _inspection = frame;
+        RenderResultMarkers();
+    }
+
+    /// <summary>Toggle which result markers are visible. Cheap — only redraws
+    /// the result overlay, doesn't re-run Inspector.</summary>
+    public void SetMarkerVisibility(bool showDefect, bool showMaster)
+    {
+        if (_showDefectMarkers == showDefect && _showMasterBalls == showMaster) return;
+        _showDefectMarkers = showDefect;
+        _showMasterBalls = showMaster;
+        RenderResultMarkers();
+    }
+
     public void SetFrame(SimulationFrame frame, bool resetView)
     {
         bool firstFrame = _frame == null;
@@ -95,7 +162,12 @@ public class SimulationCanvas : FrameworkElement
                 _transform.SetCanvasSize(ActualWidth, ActualHeight);
         }
         _pixelBitmap = null;
+        // New frame → previous inspection / binary view are stale.
+        _binaryBitmap = null;
+        _inspection = null;
+        _viewMode = ViewMode.Grayscale;
         RenderAll();
+        RenderResultMarkers();
     }
 
     public void ResetView()
@@ -103,7 +175,9 @@ public class SimulationCanvas : FrameworkElement
         if (_transform == null) return;
         _transform.ResetToFit();
         _pixelBitmap = null;
+        _binaryBitmap = null;
         RenderAll();
+        RenderResultMarkers();
     }
 
     protected override void OnRenderSizeChanged(SizeChangedInfo sizeInfo)
@@ -154,8 +228,10 @@ public class SimulationCanvas : FrameworkElement
         if (_pixelBitmap == null || _pixelBitmap.PixelWidth != w || _pixelBitmap.PixelHeight != h)
         {
             _pixelBitmap = new WriteableBitmap(w, h, 96, 96, PixelFormats.Bgra32, null);
-            using var setupDc = _ballVisual.RenderOpen();
-            setupDc.DrawImage(_pixelBitmap, new Rect(0, 0, w, h));
+            _binaryBitmap = null;  // size changed — binary view stale.
+            UpdateBallVisualImage(w, h);
+            // Stage 2 markers depend on transform/size; redraw after canvas reshape.
+            RenderResultMarkers();
         }
 
         var p = _frame.Params;
@@ -270,6 +346,15 @@ public class SimulationCanvas : FrameworkElement
 
         _pixelBitmap.AddDirtyRect(new Int32Rect(0, 0, w, h));
         _pixelBitmap.Unlock();
+
+        // After a fresh grayscale render, keep the binary view live if the
+        // user was looking at it (pan/zoom/resize destroyed _binaryBitmap).
+        // Inspection result stays valid as long as it was tied to the same
+        // bitmap dimensions; re-running inspection is the user's choice.
+        if (_viewMode == ViewMode.Binary && _binaryBitmap == null)
+        {
+            Binarize(_lastBinThreshold);
+        }
     }
 
     // Two-layer shape model — both effects stacked, independent harmonics.
@@ -753,6 +838,87 @@ public class SimulationCanvas : FrameworkElement
 
     private static uint MakeGrayPixel(byte v)
         => 0xFF000000u | ((uint)v << 16) | ((uint)v << 8) | v;
+
+    // ── Stage 2 helpers ──────────────────────────────────────────────────
+
+    /// <summary>Point <c>_ballVisual</c> at the current display bitmap. WPF
+    /// keeps a reference, so subsequent in-place writes to that WriteableBitmap
+    /// automatically appear; we only need to RenderOpen when switching which
+    /// bitmap is shown or when the bitmap is recreated at a new size.</summary>
+    private void UpdateBallVisualImage(int w, int h)
+    {
+        var bmp = _viewMode == ViewMode.Binary && _binaryBitmap != null ? _binaryBitmap : _pixelBitmap;
+        using var dc = _ballVisual.RenderOpen();
+        if (bmp != null) dc.DrawImage(bmp, new Rect(0, 0, w, h));
+    }
+
+    /// <summary>Render KBGA-style result markers (per §3.6.3): ○ at each
+    /// master position when <c>_showMasterBalls</c>, and × on every non-OK
+    /// pad when <c>_showDefectMarkers</c>. Colours come from <see
+    /// cref="DefectColor"/> which mirrors KBGA-O1 §2.4.1.3.</summary>
+    private void RenderResultMarkers()
+    {
+        using var dc = _resultVisual.RenderOpen();
+        if (_frame == null || _transform == null) return;
+        if (!_showDefectMarkers && !_showMasterBalls) return;
+
+        var masters = _frame.Masters;
+
+        if (_showMasterBalls)
+        {
+            var pen = new Pen(Brushes.White, 1.0) { DashStyle = DashStyles.Dash };
+            pen.Freeze();
+            foreach (ref readonly var m in masters.AsSpan())
+            {
+                var (sx, sy) = _transform.DataToScreen(m.X, m.Y);
+                double r = _transform.BallRadiusPixels(m.Diameter);
+                dc.DrawEllipse(null, pen, new Point(sx, sy), r, r);
+            }
+        }
+
+        if (_showDefectMarkers && _inspection != null)
+        {
+            foreach (ref readonly var r in _inspection.PadResults.AsSpan())
+            {
+                if (r.Code == DefectCode.OK) continue;
+                if (r.MasterIndex < 0 || r.MasterIndex >= masters.Length) continue;
+                ref readonly var m = ref masters[r.MasterIndex];
+                var (sx, sy) = _transform.DataToScreen(m.X, m.Y);
+                double half = _transform.BallRadiusPixels(m.Diameter) * 0.85;
+                double thickness = Math.Max(1.5, half * 0.18);
+                var pen = GetDefectPen(r.Code, thickness);
+                dc.DrawLine(pen, new Point(sx - half, sy - half), new Point(sx + half, sy + half));
+                dc.DrawLine(pen, new Point(sx - half, sy + half), new Point(sx + half, sy - half));
+            }
+        }
+    }
+
+    /// <summary>Marker colour per KBGA-O1 (操作方法) Ver.1.3.7 §2.4.1.3
+    /// (マップ表示の内容).</summary>
+    private static Color DefectColor(DefectCode code) => code switch
+    {
+        DefectCode.OK      => Color.FromRgb(0x00, 0xC8, 0x00),  // 緑
+        DefectCode.Miss    => Color.FromRgb(0x00, 0xFF, 0xFF),  // シアン
+        DefectCode.Shift   => Color.FromRgb(0xFF, 0xFF, 0x00),  // 黄
+        DefectCode.Extra   => Color.FromRgb(0xFF, 0x64, 0x64),  // 薄赤
+        DefectCode.Bridge  => Color.FromRgb(0xFF, 0x00, 0xFF),  // マジェンタ
+        DefectCode.SD or DefectCode.LD => Color.FromRgb(0xA0, 0x00, 0xFF),  // 紫
+        DefectCode.ETC     => Color.FromRgb(0xFF, 0x80, 0x00),  // 橙
+        DefectCode.EO      => Color.FromRgb(0x00, 0x64, 0xFF),  // 青
+        DefectCode.Failure => Color.FromRgb(0xFF, 0x00, 0x00),  // 赤
+        _ => Colors.White,
+    };
+
+    private static Pen GetDefectPen(DefectCode code, double thickness)
+    {
+        var pen = new Pen(new SolidColorBrush(DefectColor(code)), thickness)
+        {
+            StartLineCap = PenLineCap.Round,
+            EndLineCap = PenLineCap.Round,
+        };
+        pen.Freeze();
+        return pen;
+    }
 
     private Rect ComputeVisibleDataRect(int w, int h)
     {
